@@ -67,11 +67,13 @@ def processar_mensagem(message):
     
     bot.send_chat_action(chat_id, 'typing')
     
-    # Mantém o comando de lista caso precise no futuro
+    # Mantém o comando de lista corrigido sem a barra invertida dentro das chaves
     if texto_usuario.lower() == "lista":
         try:
             modelos = [m.name for m in genai.list_models()]
-            bot.send_message(chat_id, f"📋 Modelos disponíveis na sua conta:\n\n{'\n'.join(modelos)}")
+            quebra_linha = "\n"
+            lista_modelos_texto = quebra_linha.join(modelos)
+            bot.send_message(chat_id, f"📋 Modelos disponíveis na sua conta:\n\n{lista_modelos_texto}")
             return
         except Exception as e:
             bot.send_message(chat_id, f"⚠️ Erro ao listar modelos: {str(e)}")
