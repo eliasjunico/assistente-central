@@ -4,9 +4,12 @@ import google.generativeai as genai
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import json
+import threading
+import http.server
+import socketserver
 
 # =====================================================================
-# 1. CONFIGURAÇÕES INICIAIS E TOKENS (Pronto para Variáveis de Ambiente)
+# 1. CONFIGURAÇÕES INICIAIS E TOKENS
 # =====================================================================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -23,23 +26,18 @@ genai.configure(api_key=GEMINI_API_KEY)
 def consultar_google_sheets(nome_da_planilha: str, aba_nome: str, termo_busca: str) -> str:
     """
     Busca informações em qualquer planilha e aba do Google Sheets.
-    
-    Parâmetros:
-    - nome_da_planilha: O nome exato do arquivo da planilha no Google Drive (ex: 'Controle de Empréstimos', 'Vendas Eletrônicos').
-    - aba_nome: O nome da aba dentro dessa planilha (ex: 'Erick', 'Ikaro', 'Vencimentos').
-    - termo_busca: O texto, nome de cliente ou conta que deseja encontrar na linha.
     """
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         
-        # Pega as credenciais JSON seguras da variável de ambiente
+        # Pega as credenciais JSON da variável de ambiente
         google_creds_json = os.environ.get("GOOGLE_CREDS_JSON")
         creds_dict = json.loads(google_creds_json)
         
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
         
-        # Abre a planilha específica que o Gemini escolheu buscar
+        # Abre a planilha específica indicada pelo Gemini
         planilha = client.open(nome_da_planilha)
         aba = planilha.worksheet(aba_nome)
         
@@ -47,29 +45,30 @@ def consultar_google_sheets(nome_da_planilha: str, aba_nome: str, termo_busca: s
         celula = aba.find(termo_busca)
         if celula:
             dados_linha = aba.row_values(celula.row)
-            return f"Sucesso! Na planilha '{nome_da_planilha}' -> aba '{aba_nome}', dados encontrados para '{termo_busca}': {dados_linha}"
+            return f"Sucesso! Na planilha '{nome_da_planilha}' -> aba '{aba_nome}', dados encontrados: {dados_linha}"
         return f"Aviso: O termo '{termo_busca}' não foi encontrado na aba '{aba_nome}' da planilha '{nome_da_planilha}'."
-    except gspread.exceptions.SpreadsheetNotFound:
-        return f"Erro: A planilha chamada '{nome_da_planilha}' não foi encontrada. Certifique-se de que o nome está correto e que ela foi compartilhada com o e-mail da conta de serviço."
     except Exception as e:
         return f"Erro ao acessar o Google Sheets: {str(e)}"
 
 # =====================================================================
-# 3. CONFIGURAÇÃO DO MOTOR DO GEMINI
+# 3. CONFIGURAÇÃO DO MOTOR DO GEMINI (Global)
 # =====================================================================
 modelo_central = genai.GenerativeModel(
-    model_name='gemini-1.5-flash', # Vamos manter o flash padrão limpo
-    tools=[consultar_google_sheets], 
+    model_name='gemini-1.5-flash',
+    tools=[consultar_google_sheets],
     system_instruction=(
         "Você é o Assistente Executivo Central do Elias. Seu objetivo é gerenciar a vida pessoal, "
         "contas e os múltiplos negócios dele (minimarket, empréstimos, eletrônicos) através de suas planilhas.\n\n"
         "Regras Importantes:\n"
-        "1. O Elias possui cerca de 8 planilhas diferentes no Google Drive. Quando ele te pedir algo, identifique de qual assunto se trata, deduza qual planilha deve ser aberta e use a ferramenta 'consultar_google_sheets' passando o nome exato da planilha, a aba e o termo de busca.\n"
-        "2. Se você não tiver certeza de qual das 8 planilhas abrir, pergunte educadamente para ele antes de chutar.\n"
-        "3. Interprete os dados recebidos. Se a linha contiver valores de parcelas e datas, organize isso em um resumo financeiro limpo.\n"
-        "4. Seja sempre direto, profissional e responda usando formaturamento Markdown (negritos, listas, tabelas e alertas ⚠️)."
+        "1. O Elias possui cerca de 8 planilhas diferentes no Google Drive. Use a ferramenta 'consultar_google_sheets' passando o nome exato da planilha, a aba e o termo de busca.\n"
+        "2. Se você não tiver certeza de qual das 8 planilhas abrir, pergunte educadamente para ele antes de tentar adivinhar.\n"
+        "3. Interprete os dados recebidos e organize em um resumo financeiro limpo.\n"
+        "4. Seja sempre direto, profissional e responda usando formatação Markdown."
     )
 )
+
+# Criamos o chat de forma GLOBAL para que o interceptador do Telegram consiga ler sempre
+chat_ia = modelo_central.start_chat(enable_automatic_function_calling=True)
 
 # =====================================================================
 # 4. TRATAMENTO DE MENSAGENS DO TELEGRAM
@@ -82,6 +81,7 @@ def processar_mensagem(message):
     bot.send_chat_action(chat_id, 'typing')
     
     try:
+        # Agora o chat_ia global será reconhecido perfeitamente aqui dentro
         resposta_ia = chat_ia.send_message(texto_usuario)
         bot.send_message(chat_id, resposta_ia.text, parse_mode="Markdown")
     except Exception as e:
@@ -90,23 +90,17 @@ def processar_mensagem(message):
 # =====================================================================
 # 5. INICIALIZAÇÃO E SERVIDOR FALSO PARA O RENDER
 # =====================================================================
-import threading
-import http.server
-import socketserver
-
 def rodar_servidor_falso():
-    """Cria um servidor web simples para enganar o Render e manter o plano grátis"""
-    PORT = int(os.environ.get("PORT", 10000)) # O Render injeta a porta automaticamente
+    PORT = int(os.environ.get("PORT", 10000))
     Handler = http.server.SimpleHTTPRequestHandler
-    
     with socketserver.TCPServer(("", PORT), Handler) as httpd:
-        print(f"🌍 Servidor Falso rodando na porta {PORT} para o Render.")
+        print(f"🌍 Servidor Falso rodando na porta {PORT}")
         httpd.serve_forever()
 
 if __name__ == "__main__":
-    # 1. Liga o servidor web falso em segundo plano
+    # Liga o servidor web falso em segundo plano para o Render não dar timeout
     threading.Thread(target=rodar_servidor_falso, daemon=True).start()
     
-    # 2. Liga o seu Bot do Telegram principal
+    # Liga o Bot do Telegram
     print("🧠 Assistente Multi-Planilhas pronto e escutando no Telegram...")
     bot.infinity_polling()
