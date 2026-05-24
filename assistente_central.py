@@ -14,10 +14,7 @@ import socketserver
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# Inicializa o Bot do Telegram
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
-
-# Inicializa a API do Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 
 # =====================================================================
@@ -35,25 +32,29 @@ def consultar_google_sheets(nome_da_planilha: str, aba_nome: str, termo_busca: s
         celula = aba.find(termo_busca)
         if celula:
             dados_linha = aba.row_values(celula.row)
-            return f"Sucesso! Dados encontrados: {dados_linha}"
-        return f"Aviso: O termo '{termo_busca}' não foi encontrado."
+            return f"Sucesso! Na planilha '{nome_da_planilha}' -> aba '{aba_nome}', dados encontrados: {dados_linha}"
+        return f"Aviso: O termo '{termo_busca}' não foi encontrado na aba '{aba_nome}' da planilha '{nome_da_planilha}'."
     except Exception as e:
         return f"Erro ao acessar o Google Sheets: {str(e)}"
 
 # =====================================================================
-# 3. CONFIGURAÇÃO DO MOTOR DO GEMINI (Versão Alternativa Direta)
+# 3. CONFIGURAÇÃO DO MOTOR DO GEMINI (Atualizado para Gemini 2.5)
 # =====================================================================
-# Em vez de criar o chat global que pode falhar na inicialização, 
-# vamos tentar criar a conversa com o nome padrão recomendado pelo Google
-try:
-    modelo_central = genai.GenerativeModel(
-        model_name='gemini-pro', # Forçando o modelo clássico pro que nunca falha em versões antigas
-        tools=[consultar_google_sheets]
+modelo_central = genai.GenerativeModel(
+    model_name='models/gemini-2.5-flash',  # <--- Modelo atualizado com base na sua lista!
+    tools=[consultar_google_sheets],
+    system_instruction=(
+        "Você é o Assistente Executivo Central do Elias. Seu objetivo é gerenciar a vida pessoal, "
+        "contas e os múltiplos negócios dele (minimarket, empréstimos, eletrônicos) através de suas planilhas.\n\n"
+        "Regras Importantes:\n"
+        "1. O Elias possui cerca de 8 planilhas diferentes no Google Drive. Use a ferramenta 'consultar_google_sheets' passando o nome exato da planilha, a aba e o termo de busca.\n"
+        "2. Se você não tiver certeza de qual das 8 planilhas abrir, pergunte educadamente para ele antes de tentar adivinhar.\n"
+        "3. Interprete os dados recebidos e organize em um resumo financeiro limpo.\n"
+        "4. Seja sempre direto, profissional e responda usando formatação Markdown."
     )
-    chat_ia = modelo_central.start_chat(enable_automatic_function_calling=True)
-except Exception as e:
-    chat_ia = None
-    print(f"Erro ao inicializar modelo principal: {e}")
+)
+
+chat_ia = modelo_central.start_chat(enable_automatic_function_calling=True)
 
 # =====================================================================
 # 4. TRATAMENTO DE MENSAGENS DO TELEGRAM
@@ -66,24 +67,14 @@ def processar_mensagem(message):
     
     bot.send_chat_action(chat_id, 'typing')
     
-    # COMANDO SECRETO PARA DESCOBRIR OS MODELOS
+    # Mantém o comando de lista caso precise no futuro
     if texto_usuario.lower() == "lista":
         try:
             modelos = [m.name for m in genai.list_models()]
-            lista_texto = "\n".join(modelos)
-            bot.send_message(chat_id, f"📋 Modelos disponíveis na sua conta:\n\n{lista_texto}")
+            bot.send_message(chat_id, f"📋 Modelos disponíveis na sua conta:\n\n{'\n'.join(modelos)}")
             return
         except Exception as e:
             bot.send_message(chat_id, f"⚠️ Erro ao listar modelos: {str(e)}")
-            return
-
-    # Se o chat_ia falhou na inicialização, tentamos criar um básico aqui dentro
-    if chat_ia is None:
-        try:
-            modelo_central = genai.GenerativeModel(model_name='gemini-1.5-flash')
-            chat_ia = modelo_central.start_chat(enable_automatic_function_calling=True)
-        except Exception as e:
-            bot.send_message(chat_id, f"⚠️ Falha crítica ao ligar o Gemini: {str(e)}")
             return
 
     try:
@@ -103,5 +94,5 @@ def rodar_servidor_falso():
 
 if __name__ == "__main__":
     threading.Thread(target=rodar_servidor_falso, daemon=True).start()
-    print("🧠 Assistente pronto e escutando...")
+    print("🧠 Assistente Central pronto e escutando...")
     bot.infinity_polling()
