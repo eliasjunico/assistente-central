@@ -58,7 +58,7 @@ def consultar_google_sheets(nome_da_planilha: str, aba_nome: str, termo_busca: s
 # 3. CONFIGURAÇÃO DO MOTOR DO GEMINI
 # =====================================================================
 modelo_central = genai.GenerativeModel(
-    model_name='gemini-1.5-flash',
+    model_name='models/gemini-1.5-flash',
     tools=[consultar_google_sheets], # Acopla a nova ferramenta flexível
     system_instruction=(
         "Você é o Assistente Executivo Central do Elias. Seu objetivo é gerenciar a vida pessoal, "
