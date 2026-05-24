@@ -91,7 +91,25 @@ def processar_mensagem(message):
         bot.send_message(chat_id, f"⚠️ Erro ao processar o comando da IA: {str(e)}")
 
 # =====================================================================
-# 5. INICIALIZAÇÃO
+# 5. INICIALIZAÇÃO E SERVIDOR FALSO PARA O RENDER
 # =====================================================================
-print("🧠 Assistente Multi-Planilhas pronto e escutando no Telegram...")
-bot.infinity_polling()
+import threading
+import http.server
+import socketserver
+
+def rodar_servidor_falso():
+    """Cria um servidor web simples para enganar o Render e manter o plano grátis"""
+    PORT = int(os.environ.get("PORT", 10000)) # O Render injeta a porta automaticamente
+    Handler = http.server.SimpleHTTPRequestHandler
+    
+    with socketserver.TCPServer(("", PORT), Handler) as httpd:
+        print(f"🌍 Servidor Falso rodando na porta {PORT} para o Render.")
+        httpd.serve_forever()
+
+if __name__ == "__main__":
+    # 1. Liga o servidor web falso em segundo plano
+    threading.Thread(target=rodar_servidor_falso, daemon=True).start()
+    
+    # 2. Liga o seu Bot do Telegram principal
+    print("🧠 Assistente Multi-Planilhas pronto e escutando no Telegram...")
+    bot.infinity_polling()
