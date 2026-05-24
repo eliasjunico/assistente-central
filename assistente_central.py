@@ -58,8 +58,8 @@ def consultar_google_sheets(nome_da_planilha: str, aba_nome: str, termo_busca: s
 # 3. CONFIGURAÇÃO DO MOTOR DO GEMINI
 # =====================================================================
 modelo_central = genai.GenerativeModel(
-    model_name='models/gemini-1.5-flash',
-    tools=[consultar_google_sheets], # Acopla a nova ferramenta flexível
+    model_name='gemini-1.5-flash', # Vamos manter o flash padrão limpo
+    tools=[consultar_google_sheets], 
     system_instruction=(
         "Você é o Assistente Executivo Central do Elias. Seu objetivo é gerenciar a vida pessoal, "
         "contas e os múltiplos negócios dele (minimarket, empréstimos, eletrônicos) através de suas planilhas.\n\n"
@@ -70,9 +70,6 @@ modelo_central = genai.GenerativeModel(
         "4. Seja sempre direto, profissional e responda usando formaturamento Markdown (negritos, listas, tabelas e alertas ⚠️)."
     )
 )
-
-# Inicia o chat ativo com chamadas automáticas de função
-chat_ia = modelo_central.start_chat(enable_automatic_function_calling=True)
 
 # =====================================================================
 # 4. TRATAMENTO DE MENSAGENS DO TELEGRAM
