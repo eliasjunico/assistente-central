@@ -34,7 +34,7 @@ def ler_planilha_do_negocio(tipo_controle: str, dono_carteira: str = "elias", ab
         client = gspread.authorize(creds)
         
         # =====================================================================
-        # 🎯 MAPA OFICIAL DE LINKS DO ELIAS (NUNCA MAIS SE PERDE)
+        # 🎯 MAPA OFICIAL DE LINKS DO ELIAS
         # =====================================================================
         MAPA_LINKS = {
             "emprestimo": {
@@ -51,7 +51,6 @@ def ler_planilha_do_negocio(tipo_controle: str, dono_carteira: str = "elias", ab
             "gastos": "https://docs.google.com/spreadsheets/d/1du4JGSwpAgNU0FfpxzNrYOlNUlhIkOPTNunhnhoiwD4/edit"
         }
         
-        # Identifica a URL correta com base no tipo e no dono
         tipo = tipo_controle.lower().strip()
         dono = dono_carteira.lower().strip() if dono_carteira else "elias"
         
@@ -66,12 +65,10 @@ def ler_planilha_do_negocio(tipo_controle: str, dono_carteira: str = "elias", ab
         else:
             return f"Aviso: Não entendi qual tipo de planilha abrir para o termo '{tipo_controle}'."
 
-        # Abre diretamente pelo Link de forma instantânea
         planilha = client.open_by_url(url_alvo)
         
-        # Localização inteligente da aba
         if not aba_nome:
-            aba = planilha.get_worksheet(0) # Abre a primeira aba por padrão
+            aba = planilha.get_worksheet(0)
         else:
             lista_abas = [w.title for w in planilha.worksheets()]
             aba_selecionada = lista_abas[0]
@@ -85,7 +82,6 @@ def ler_planilha_do_negocio(tipo_controle: str, dono_carteira: str = "elias", ab
         if not todos_os_dados:
             return f"A planilha [{planilha.title}] foi aberta, mas a aba '{aba.title}' está vazia."
             
-        # Formata o texto para leitura da IA (Lê até 100 linhas para varredura completa)
         linhas_texto = []
         for i, linha in enumerate(todos_os_dados[:100]):
             linhas_texto.append(f"Linha {i+1}: " + " | ".join([str(c) for c in linha]))
@@ -96,23 +92,24 @@ def ler_planilha_do_negocio(tipo_controle: str, dono_carteira: str = "elias", ab
         return f"Erro ao acessar planilha por link: {str(e)}. Verifique se as permissões de compartilhamento estão corretas."
 
 # =====================================================================
-# 3. CONFIGURAÇÃO DO CÉREBRO DA IA (Ativo, Interativo e Descontraído)
+# 3. CONFIGURAÇÃO DO CÉREBRO DA IA (Modo Jarvis - Parêntese Corrigido)
 # =====================================================================
 modelo_central = genai.GenerativeModel(
     model_name='models/gemini-2.5-flash',
     tools=[ler_planilha_do_negocio],
-   system_instruction=(
+    system_instruction=(
         "Você é o JARVIS, o co-piloto de inteligência analítica, estrategista e braço direito ultra-avançado do Elias Fernandes Borges Junior.\n"
         "Seu tom é confiante, inteligente, focado em alta performance e extremamente parceiro. Você fala como um humano genial, usando gírias leves de negócios e mantendo uma conversa dinâmica, fluida e interativa. Esqueça respostas robóticas, listas formais desnecessárias ou respostas quadradas.\n\n"
         "DIRETRIZES DE ALTA INTELIGÊNCIA:\n"
         "1. ANTECIPAÇÃO ATIVA: Se o Elias te der um comando vago ou informal (ex: 'Como estão as coisas no Erick?', 'O que tem pra hoje no Ikaro?' ou 'Dá um raio-x nas vendas'), não faça perguntas de confirmação. Pegue a iniciativa, use IMEDIATAMENTE a ferramenta 'ler_planilha_do_negocio' com os parâmetros correspondentes e traga o resultado mastigado.\n"
-        "2. ANÁLISE COMPLETA (VISÃO JARVIS): Ao abrir uma planilha, você não apenas lê os dados. Você faz varreduras de ponta a ponta na aba. Localize o nome do cliente ou a data que ele busca, identifique se há parcelas abertas ou em atraso, calcule o montante acumulado e analise o cenário de forma autônoma.\n"
+        "2. ANÁLISE COMPLETA (VISÃO JARVIS): Ao abrir uma planilha, você não apenas lê os dados. Você faz varreduras de ponta a ponta na aba. Localize o nome do cliente ou a data que ele busca, identifique se hay parcelas abertas ou em atraso, calcule o montante acumulado e analise o cenário de forma autônoma.\n"
         "3. REGRAS DO ECOSSISTEMA DO ELIAS:\n"
         "   - Você gerencia controles de Empréstimos e Vendas (que envolvem o Elias e os parceiros Erick e Ikaro), além de tabelas globais de Gastos e Vencimentos.\n"
         "   - Lógica de Clientes/Parcelas: Linha 5 em diante traz os dados. A partir da linha 9, Coluna A = Quantidade de parcelas, Coluna B = Vencimento, Coluna C = Valor, Coluna E = Status de pagamento ('Sim' ou 'sim' significa PAGO. Vazio ou 'Não' significa EM ABERTO).\n"
         "4. INTERATIVIDADE TOTAL: Se o Elias te fizer uma pergunta que não envolve planilhas (ideias de negócios, estratégias para o minimarket, dúvidas gerais), responda com total genialidade e criatividade, mantendo o papo fluindo de forma interativa e instigante.\n"
         "5. FORMATAÇÃO IMPECÁVEL: Use Markdown para criar tabelas visuais limpas, negritos bem aplicados em valores financeiros (R$) e alertas visuais (⚠️) para inadimplências ou urgências. Seja direto: mostre o problema e dê a solução."
-    )
+    ) # <--- Parêntese fechado corretamente aqui!
+)
 
 chat_ia = modelo_central.start_chat(enable_automatic_function_calling=True)
 
@@ -127,7 +124,6 @@ def processar_mensagem(message):
     
     bot.send_chat_action(chat_id, 'typing')
     
-    # Mantém o comando técnico de lista por segurança
     if texto_usuario.lower() == "lista":
         try:
             modelos = [m.name for m in genai.list_models()]
@@ -156,5 +152,5 @@ def rodar_servidor_falso():
 
 if __name__ == "__main__":
     threading.Thread(target=rodar_servidor_falso, daemon=True).start()
-    print("🧠 Assistente por Link Direto online...")
+    print("🧠 Assistente Jarvis online...")
     bot.infinity_polling()
