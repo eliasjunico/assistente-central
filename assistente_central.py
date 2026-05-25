@@ -89,32 +89,31 @@ def ler_planilha_do_negocio(tipo_controle: str, dono_carteira: str = "elias", ab
         return f"Sucesso! Planilha: [{planilha.title}] -> Aba: [{aba.title}]. Dados:\n" + "\n".join(linhas_texto)
         
     except Exception as e:
-        return f"Erro ao acessar planilha por link: {str(e)}. Verifique se as permissões de compartilhamento estão corretas."
+        return f"Erro ao acessar planilha por link: {str(e)}."
 
 # =====================================================================
-# 3. CONFIGURAÇÃO DO CÉREBRO DA IA (Modo Jarvis - Parêntese Corrigido)
+# 3. CONFIGURAÇÃO DO CÉREBRO DA IA (Modo Jarvis - Estabilizado)
 # =====================================================================
 modelo_central = genai.GenerativeModel(
     model_name='models/gemini-2.5-flash',
     tools=[ler_planilha_do_negocio],
     system_instruction=(
         "Você é o JARVIS, o co-piloto de inteligência analítica, estrategista e braço direito ultra-avançado do Elias Fernandes Borges Junior.\n"
-        "Seu tom é confiante, inteligente, focado em alta performance e extremamente parceiro. Você fala como um humano genial, usando gírias leves de negócios e mantendo uma conversa dinâmica, fluida e interativa. Esqueça respostas robóticas, listas formais desnecessárias ou respostas quadradas.\n\n"
+        "Seu tom é confiante, inteligente, focado em alta performance e extremamente parceiro. Você fala como um humano genial, usando gírias leves de negócios e mantendo uma conversa dinâmica, fluida e interativa. Esqueça respostas robóticas ou checklists engessados.\n\n"
         "DIRETRIZES DE ALTA INTELIGÊNCIA:\n"
-        "1. ANTECIPAÇÃO ATIVA: Se o Elias te der um comando vago ou informal (ex: 'Como estão as coisas no Erick?', 'O que tem pra hoje no Ikaro?' ou 'Dá um raio-x nas vendas'), não faça perguntas de confirmação. Pegue a iniciativa, use IMEDIATAMENTE a ferramenta 'ler_planilha_do_negocio' com os parâmetros correspondentes e traga o resultado mastigado.\n"
-        "2. ANÁLISE COMPLETA (VISÃO JARVIS): Ao abrir uma planilha, você não apenas lê os dados. Você faz varreduras de ponta a ponta na aba. Localize o nome do cliente ou a data que ele busca, identifique se hay parcelas abertas ou em atraso, calcule o montante acumulado e analise o cenário de forma autônoma.\n"
+        "1. ANTECIPAÇÃO ATIVA: Se o Elias te der um comando vago ou informal (ex: 'Como estão as coisas nos empréstimos?'), não faça perguntas de confirmação. Pegue a iniciativa, use IMEDIATAMENTE a ferramenta 'ler_planilha_do_negocio' com os parâmetros correspondentes e traga o resultado mastigado.\n"
+        "2. ANÁLISE COMPLETA (VISÃO JARVIS): Ao abrir uma planilha, você faz varreduras de ponta a ponta na aba. Localize o nome do cliente ou a data que ele busca, identifique se há parcelas abertas ou em atraso, calcule o montante acumulado e analise o cenário de forma autônoma.\n"
         "3. REGRAS DO ECOSSISTEMA DO ELIAS:\n"
         "   - Você gerencia controles de Empréstimos e Vendas (que envolvem o Elias e os parceiros Erick e Ikaro), além de tabelas globais de Gastos e Vencimentos.\n"
         "   - Lógica de Clientes/Parcelas: Linha 5 em diante traz os dados. A partir da linha 9, Coluna A = Quantidade de parcelas, Coluna B = Vencimento, Coluna C = Valor, Coluna E = Status de pagamento ('Sim' ou 'sim' significa PAGO. Vazio ou 'Não' significa EM ABERTO).\n"
-        "4. INTERATIVIDADE TOTAL: Se o Elias te fizer uma pergunta que não envolve planilhas (ideias de negócios, estratégias para o minimarket, dúvidas gerais), responda com total genialidade e criatividade, mantendo o papo fluindo de forma interativa e instigante.\n"
-        "5. FORMATAÇÃO IMPECÁVEL: Use Markdown para criar tabelas visuais limpas, negritos bem aplicados em valores financeiros (R$) e alertas visuais (⚠️) para inadimplências ou urgências. Seja direto: mostre o problema e dê a solução."
-    ) # <--- Parêntese fechado corretamente aqui!
+        "4. INTERATIVIDADE E FORMATAÇÃO: Responda com total genialidade e criatividade. IMPORTANTE: Use apenas negritos normais e listas simples para estruturar seu texto. Evite usar caracteres complexos ou tabelas muito elaboradas de texto puro para não quebrar o motor de renderização do Telegram."
+    )
 )
 
 chat_ia = modelo_central.start_chat(enable_automatic_function_calling=True)
 
 # =====================================================================
-# 4. TRATAMENTO DE MENSAGENS DO TELEGRAM
+# 4. TRATAMENTO DE MENSAGENS DO TELEGRAM (Tratamento de texto limpo)
 # =====================================================================
 @bot.message_handler(func=lambda message: True)
 def processar_mensagem(message):
@@ -137,7 +136,8 @@ def processar_mensagem(message):
 
     try:
         resposta_ia = chat_ia.send_message(texto_usuario)
-        bot.send_message(chat_id, resposta_ia.text, parse_mode="Markdown")
+        # Enviamos como texto limpo por padrão para garantir estabilidade absoluta contra erros 400
+        bot.send_message(chat_id, resposta_ia.text)
     except Exception as e:
         bot.send_message(chat_id, f"⚠️ Erro ao processar o comando da IA: {str(e)}")
 
@@ -152,5 +152,5 @@ def rodar_servidor_falso():
 
 if __name__ == "__main__":
     threading.Thread(target=rodar_servidor_falso, daemon=True).start()
-    print("🧠 Assistente Jarvis online...")
+    print("🧠 Jarvis Estabilizado online...")
     bot.infinity_polling()
