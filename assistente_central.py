@@ -93,24 +93,39 @@ def consultar_banco_local_jarvis(tipo_controle: str, dono_carteira: str = "elias
     chave = f"emprestimo_{dono}" if "emprestimo" in tipo else (f"vendas_{dono}" if tipo in ["vendas", "venda", "eletronicos", "eletronico"] else ("vencimentos" if "vencimento" in tipo else "gastos"))
     return DADOS_PLANILHAS_LOCAL.get(chave, "Tabela não mapeada no sistema.")
 
+# MELHORIA NA FUNÇÃO DE CONSULTA (Adicionando tratamento de erro robusto)
 def executar_query_mercado_realtime(sql_comando: str) -> str:
-    """Envia uma query SQL direto para o LIONSTESTE.exe no servidor do mercado e aguarda o JSON de resposta."""
     global FILA_CONSULTAS_MERCADO, RESPOSTAS_MERCADO
     id_requisicao = str(uuid.uuid4())[:8]
     
-    # Coloca o comando SQL gerado pelo Jarvis na fila de transmissão
     ordem = {"id": id_requisicao, "sql": sql_comando}
     FILA_CONSULTAS_MERCADO.append(ordem)
-    print(f"📡 [PONTE MERCADO] Nova consulta adicionada à fila. ID: {id_requisicao} | SQL: {sql_comando}")
     
-    # Aguarda o LIONSTESTE.exe processar localmente e responder via POST (Timeout de 12 segundos)
-    for _ in range(24):
+    # Aumentado para 40 tentativas (20 segundos) para evitar timeout prematuro
+    for _ in range(40):
         time.sleep(0.5)
         if id_requisicao in RESPOSTAS_MERCADO:
-            dados_retornados = RESPOSTAS_MERCADO.pop(id_requisicao)
-            return json.dumps(dados_retornados, ensure_ascii=False)
+            dados = RESPOSTAS_MERCADO.pop(id_requisicao)
+            # Retorna string limpa para evitar erro de formatação do Gemini
+            return json.dumps(dados, ensure_ascii=False)
             
-    return json.dumps([{"erro": "O servidor local do mercado (LIONSTESTE.exe) demorou para responder. Verifique se ele está aberto no mercado."}])
+    return json.dumps({"erro": "Timeout: O LIONS não respondeu a tempo. Verifique a conexão do servidor local."})
+
+# MELHORIA NO TRATAMENTO DE ERRO DO TELEGRAM (Para ver o erro real)
+@bot.message_handler(func=lambda message: True)
+def receber_mensagem_telegram(message):
+    global chat_ia
+    chat_id = message.chat.id
+    bot.send_chat_action(chat_id, 'typing')
+    
+    try:
+        resposta_ia = chat_ia.send_message(message.text)
+        # Força Markdown para evitar erros de caracteres especiais
+        bot.send_message(chat_id, resposta_ia.text, parse_mode="Markdown")
+    except Exception as e:
+        # LOG DE ERRO REAL: Isso vai imprimir no console do Render qual é o problema exato
+        print(f"DEBUG DE ERRO: {str(e)}") 
+        bot.send_message(chat_id, f"⚠️ Jarvis em manutenção técnica.\nErro interno: `{str(e)[:50]}`", parse_mode="Markdown")
 
 # =====================================================================
 # 🧠 ARQUITETURA MULTI-AGENTE DO JARVIS (ITEM 3)
