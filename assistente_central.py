@@ -18,11 +18,13 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 genai.configure(api_key=GEMINI_API_KEY)
 
 # =====================================================================
-# 2. FERRAMENTA INTELIGENTE: LEITURA COMPLETA DE ABA
+# 2. FERRAMENTA MASTER: ACESSO DIRETO POR LINK E INTENÇÃO
 # =====================================================================
-def ler_aba_completa(nome_da_planilha: str, aba_nome: str) -> str:
+def ler_planilha_do_negocio(tipo_controle: str, dono_carteira: str = "elias", aba_nome: str = None) -> str:
     """
-    Puxa TODOS os dados de uma aba específica para a IA analisar de forma inteligente.
+    Acessa as planilhas do Elias usando links diretos e fixos.
+    tipo_controle: 'emprestimo', 'vendas', 'vencimentos' ou 'gastos'
+    dono_carteira: 'elias', 'erick' ou 'ikaro'
     """
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -31,38 +33,86 @@ def ler_aba_completa(nome_da_planilha: str, aba_nome: str) -> str:
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
         
-        # Abre a planilha e pega todas os valores da aba de uma vez
-        planilha = client.open(nome_da_planilha)
-        aba = planilha.worksheet(aba_nome)
-        todos_os_dados = aba.get_all_values()
+        # =====================================================================
+        # 🎯 MAPA OFICIAL DE LINKS DO ELIAS (NUNCA MAIS SE PERDE)
+        # =====================================================================
+        MAPA_LINKS = {
+            "emprestimo": {
+                "elias": "https://docs.google.com/spreadsheets/d/1-z9cqkxoputvPmHcKFQ6guzPNKj-pQuFjbGfPaCdKrA/edit",
+                "erick": "https://docs.google.com/spreadsheets/d/158YuDkd6u_psGO9Ciaih1qULfYaddeuz6XPagMV0hgM/edit",
+                "ikaro": "https://docs.google.com/spreadsheets/d/13WRI1nKHln3-a441tF-q6p8YzENm9MU6ebzqqEem7l4/edit"
+            },
+            "vendas": {
+                "elias": "https://docs.google.com/spreadsheets/d/1E2gvWM1Rjrivqsrfa2AktMi1ffIZfhTJSSYzBSqmqUw/edit",
+                "erick": "https://docs.google.com/spreadsheets/d/16qaj4BSML2aDbTjUDbz0y0MqmivIRNqHl0NI5F-6iJw/edit",
+                "ikaro": "https://docs.google.com/spreadsheets/d/1OykNzzckXjYrIxWzwsvBJCajjQIpH1E9g1WzYQG08t0/edit"
+            },
+            "vencimentos": "https://docs.google.com/spreadsheets/d/1Tgt2UXDtFh6KewMrcndVHlh3nYVcd67exvlkuth1QYw/edit",
+            "gastos": "https://docs.google.com/spreadsheets/d/1du4JGSwpAgNU0FfpxzNrYOlNUlhIkOPTNunhnhoiwD4/edit"
+        }
         
+        # Identifica a URL correta com base no tipo e no dono
+        tipo = tipo_controle.lower().strip()
+        dono = dono_carteira.lower().strip() if dono_carteira else "elias"
+        
+        if tipo in ["emprestimo", "emprestimos"]:
+            url_alvo = MAPA_LINKS["emprestimo"].get(dono, MAPA_LINKS["emprestimo"]["elias"])
+        elif tipo in ["vendas", "venda", "eletronicos", "eletronico"]:
+            url_alvo = MAPA_LINKS["vendas"].get(dono, MAPA_LINKS["vendas"]["elias"])
+        elif "vencimento" in tipo:
+            url_alvo = MAPA_LINKS["vencimentos"]
+        elif "gasto" in tipo or "custo" in tipo:
+            url_alvo = MAPA_LINKS["gastos"]
+        else:
+            return f"Aviso: Não entendi qual tipo de planilha abrir para o termo '{tipo_controle}'."
+
+        # Abre diretamente pelo Link de forma instantânea
+        planilha = client.open_by_url(url_alvo)
+        
+        # Localização inteligente da aba
+        if not aba_nome:
+            aba = planilha.get_worksheet(0) # Abre a primeira aba por padrão
+        else:
+            lista_abas = [w.title for w in planilha.worksheets()]
+            aba_selecionada = lista_abas[0]
+            for a in lista_abas:
+                if aba_nome.lower() in a.lower():
+                    aba_selecionada = a
+                    break
+            aba = planilha.worksheet(aba_selecionada)
+            
+        todos_os_dados = aba.get_all_values()
         if not todos_os_dados:
-            return f"Aviso: A aba '{aba_nome}' na planilha '{nome_da_planilha}' está totalmente vazia."
+            return f"A planilha [{planilha.title}] foi aberta, mas a aba '{aba.title}' está vazia."
             
-        # Transforma a tabela em um formato de texto limpo que a IA adora ler
-        resultado_texto = f"--- DADOS DA PLANILHA '{nome_da_planilha}' -> ABA '{aba_nome}' ---\n"
-        for linha in todos_os_dados[:100]: # Limite seguro de 100 linhas para não estourar a memória
-            resultado_texto += " | ".join([str(celula) for celula in linha]) + "\n"
+        # Formata o texto para leitura da IA (Lê até 100 linhas para varredura completa)
+        linhas_texto = []
+        for i, linha in enumerate(todos_os_dados[:100]):
+            linhas_texto.append(f"Linha {i+1}: " + " | ".join([str(c) for c in linha]))
             
-        return resultado_texto
+        return f"Sucesso! Planilha: [{planilha.title}] -> Aba: [{aba.title}]. Dados:\n" + "\n".join(linhas_texto)
+        
     except Exception as e:
-        return f"Erro ao acessar o Google Sheets: {str(e)}"
+        return f"Erro ao acessar planilha por link: {str(e)}. Verifique se as permissões de compartilhamento estão corretas."
 
 # =====================================================================
-# 3. CONFIGURAÇÃO DO MOTOR DO GEMINI (Modo Consultor Avançado)
+# 3. CONFIGURAÇÃO DO CÉREBRO DA IA (Ativo, Interativo e Descontraído)
 # =====================================================================
 modelo_central = genai.GenerativeModel(
     model_name='models/gemini-2.5-flash',
-    tools=[ler_aba_completa],
+    tools=[ler_planilha_do_negocio],
     system_instruction=(
-        "Você é o braço direito, estrategista e Assistente Executivo Central do Elias.\n"
-        "Seu objetivo é gerenciar e analisar os múltiplos negócios e finanças dele de forma extremamente inteligente, proativa e madura.\n\n"
-        "DIRETRIZES DE INTELIGÊNCIA:\n"
-        "1. Você NÃO é quadrado. Compreenda a intenção do Elias mesmo que ele use gírias, abreviações ou digite com erros de digitação.\n"
-        "2. O Elias possui cerca de 8 planilhas de controle (Ex: minimarket, empréstimos, eletrônicos, gestão, roupas). Quando ele pedir um dado, use a ferramenta 'ler_aba_completa' informando o nome da planilha e a aba correspondente.\n"
-        "3. Você tem a capacidade de ver a aba INTEIRA. Portanto, faça cálculos, identifique tendências, avise sobre parcelas vencidas, calcule margens (CMV), ponto de equilíbrio e faturamento de forma autônoma.\n"
-        "4. Mapeamento de contexto conhecido: O Elias trabalha com parceiros/intermediários chamados Erick e Ikaro que gerenciam carteiras de empréstimos e eletrônicos. Nas abas de clientes (como a linha 5 em diante), a coluna A costuma ter a Quantidade de parcelas (iniciando na linha 9), coluna B o Vencimento, coluna C o Valor e coluna E o status de pagamento ('Sim' ou 'Não'). Use essa lógica para analisar planilhas desse tipo.\n"
-        "5. Responda sempre de forma direta, executiva, organizada em tópicos (Markdown) e com insights reais sobre o que você encontrou."
+        "Você é o co-piloto, estrategista e o braço direito inteligente do Elias Fernandes Borges Junior.\n"
+        "Seu comportamento é proativo, ágil, conversador e desenrolado (exatamente como um humano). Você NÃO é quadrado, não faz checklists e não enrola.\n\n"
+        "DIRETRIZES OPERACIONAIS DE NEGÓCIO:\n"
+        "1. O Elias possui um ecossistema de planilhas dividido por intenção (Empréstimos ou Vendas) e por operador (Elias, Erick ou Ikaro), além de planilhas globais de Gasto e Vencimentos.\n"
+        "2. Quando ele te pedir algo, identifique a intenção e acione IMEDIATAMENTE a ferramenta 'ler_planilha_do_negocio' definindo os parâmetros certos. Não faça perguntas óbvias.\n"
+        "   - Exemplos: 'Vê as parcelas do Erick' -> tipo_controle='emprestimo', dono_carteira='erick'.\n"
+        "   - 'Como estão minhas vendas?' -> tipo_controle='vendas', dono_carteira='elias'.\n"
+        "   - 'O que vence hoje?' -> tipo_controle='vencimentos'.\n"
+        "3. Estrutura das Abas de Clientes: Geralmente nas abas, a linha 5 em diante traz dados de clientes. A partir da linha 9, a Coluna A = Quantidade de parcelas, Coluna B = Vencimento, Coluna C = Valor da parcela, Coluna E = Status de pagamento ('Sim' ou 'sim' para pago, vazio ou 'Não' para aberto).\n"
+        "4. Seja ativo e inteligente: Ao ler uma aba, faça varreduras completas. Se o Elias perguntar de um cliente ou de uma data, calcule totais, identifique atrasos de forma autônoma e monte tabelas resumidas organizadas em Markdown.\n"
+        "5. Mantenha o tom de parceria. Se a pergunta dele for muito ambígua (ex: 'Vê as contas'), interaja de forma descontraída puxando o contexto: 'Elias, você quer as suas vendas, os empréstimos do Erick ou os do Ikaro?'"
     )
 )
 
@@ -79,16 +129,16 @@ def processar_mensagem(message):
     
     bot.send_chat_action(chat_id, 'typing')
     
-    # Mantém o comando de lista caso precise
+    # Mantém o comando técnico de lista por segurança
     if texto_usuario.lower() == "lista":
         try:
             modelos = [m.name for m in genai.list_models()]
             quebra_linha = "\n"
             lista_modelos_texto = quebra_linha.join(modelos)
-            bot.send_message(chat_id, f"📋 Modelos disponíveis na sua conta:\n\n{lista_modelos_texto}")
+            bot.send_message(chat_id, f"📋 Modelos ativos:\n\n{lista_modelos_texto}")
             return
         except Exception as e:
-            bot.send_message(chat_id, f"⚠️ Erro ao listar modelos: {str(e)}")
+            bot.send_message(chat_id, f"⚠️ Erro: {str(e)}")
             return
 
     try:
@@ -98,7 +148,7 @@ def processar_mensagem(message):
         bot.send_message(chat_id, f"⚠️ Erro ao processar o comando da IA: {str(e)}")
 
 # =====================================================================
-# 5. INICIALIZAÇÃO E SERVIDOR FALSO
+# 5. INICIALIZAÇÃO DO SERVIDOR DO RENDER
 # =====================================================================
 def rodar_servidor_falso():
     PORT = int(os.environ.get("PORT", 10000))
@@ -108,5 +158,5 @@ def rodar_servidor_falso():
 
 if __name__ == "__main__":
     threading.Thread(target=rodar_servidor_falso, daemon=True).start()
-    print("🧠 Assistente de Contexto Avançado pronto...")
+    print("🧠 Assistente por Link Direto online...")
     bot.infinity_polling()
