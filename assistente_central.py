@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime
 
 # =====================================================================
-# 1. CONFIGURAÇÕES INICIAIS E CRIDENCIAIS
+# 1. CONFIGURAÇÕES INICIAIS E CREDENCIAIS
 # =====================================================================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -20,29 +20,27 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 genai.configure(api_key=GEMINI_API_KEY)
 
-# Filas de sincronização em tempo real para a ponte com o mercado local (.exe)
 FILA_CONSULTAS_MERCADO = []
 RESPOSTAS_MERCADO = {}
 
 # =====================================================================
-# 🎯 IMPLEMENTAÇÃO DO ITEM 4: BANCO DE CACHE LOCAL (MEMÓRIA RAM)
+# 🎯 NOVA ABORDAGEM: CONSULTA DIRETA E SOB DEMANDA (SEM LOOP DE CACHE)
 # =====================================================================
-DADOS_PLANILHAS_LOCAL = {
-    "emprestimo_elias": "Sem dados carregados.",
-    "emprestimo_erick": "Sem dados carregados.",
-    "emprestimo_ikaro": "Sem dados carregados.",
-    "vendas_elias": "Sem dados carregados.",
-    "vendas_erick": "Sem dados carregados.",
-    "vendas_ikaro": "Sem dados carregados.",
-    "vencimentos": "Sem dados carregados.",
-    "gastos": "Sem dados carregados."
-}
-
-def atualizar_dados_sheets_agora():
-    """Atualiza o cache da RAM apenas quando solicitado, economizando cota."""
-    global DADOS_PLANILHAS_LOCAL
-    print("🔄 [JARVIS ENGINE] Atualizando tabelas do Google Sheets via comando...")
+def consultar_planilha_financeira(tipo_controle: str, dono_carteira: str = "elias") -> str:
+    """Busca os dados EM TEMPO REAL de uma planilha específica apenas quando o Jarvis precisar."""
+    tipo = tipo_controle.lower().strip()
+    dono = dono_carteira.lower().strip() if dono_carteira else "elias"
     
+    # Identifica qual chave o Jarvis quer buscar
+    if "emprestimo" in tipo:
+        chave = f"emprestimo_{dono}"
+    elif tipo in ["vendas", "venda", "eletronicos", "eletronico"]:
+        chave = f"vendas_{dono}"
+    elif "vencimento" in tipo:
+        chave = "vencimentos"
+    else:
+        chave = "gastos"
+
     MAPA_LINKS = {
         "emprestimo_elias": "https://docs.google.com/spreadsheets/d/1-z9cqkxoputvPmHcKFQ6guzPNKj-pQuFjbGfPaCdKrA/edit",
         "emprestimo_erick": "https://docs.google.com/spreadsheets/d/158YuDkd6u_psGO9Ciaih1qULfYaddeuz6XPagMV0hgM/edit",
@@ -54,120 +52,80 @@ def atualizar_dados_sheets_agora():
         "gastos": "https://docs.google.com/spreadsheets/d/1du4JGSwpAgNU0FfpxzNrYOlNUlhIkOPTNunhnhoiwD4/edit"
     }
     
-    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+    url = MAPA_LINKS.get(chave)
+    if not url:
+        return "Erro: Tabela não encontrada ou não mapeada."
+
+    print(f"🔄 [AÇÃO DO JARVIS] Abrindo a planilha Google ({chave}) em tempo real...")
     
+    scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     try:
         google_creds_json = os.environ.get("GOOGLE_CREDS_JSON")
-        if not google_creds_json: return "Erro: Sem credenciais do Google no servidor."
+        if not google_creds_json: 
+            return "Erro: Credenciais do Google (GOOGLE_CREDS_JSON) não configuradas no servidor."
             
         creds_dict = json.loads(google_creds_json)
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
         
-        for chave, url in MAPA_LINKS.items():
-            try:
-                planilha = client.open_by_url(url)
-                aba = planilha.get_worksheet(0)
-                valores = aba.get_all_values()
-                
-                if valores:
-                    lines = [f"Linha {i+1}: " + " | ".join([str(c) for c in r]) for i, r in enumerate(valores[:100])]
-                    DADOS_PLANILHAS_LOCAL[chave] = f"Planilha: [{planilha.title}] -> Aba: [{aba.title}]. Dados:\n" + "\n".join(lines)
-            except Exception as ie:
-                print(f"⚠️ Erro na planilha {chave}: {str(ie)}")
-        return "✅ Cache das planilhas atualizado com sucesso!"
+        planilha = client.open_by_url(url)
+        aba = planilha.get_worksheet(0)
+        valores = aba.get_all_values()
+        
+        if valores:
+            # Pega apenas as primeiras 100 linhas para não estourar tamanho de texto
+            lines = [f"Linha {i+1}: " + " | ".join([str(c) for c in r]) for i, r in enumerate(valores[:100])]
+            return f"Dados da Planilha [{planilha.title}]:\n" + "\n".join(lines)
+        return "A planilha está vazia."
     except Exception as e:
-        return f"❌ Erro geral: {str(e)}"
+        return f"Erro ao acessar o Google Sheets: {str(e)}"
 
-# =====================================================================
-# 🛠️ FERRAMENTAS DO ECOSSISTEMA (TOOLS DO GEMINI)
-# =====================================================================
-def consultar_banco_local_jarvis(tipo_controle: str, dono_carteira: str = "elias") -> str:
-    """Busca instantaneamente no Cache RAM dados das planilhas de empréstimos, eletrônicos ou gastos."""
-    global DADOS_PLANILHAS_LOCAL
-    tipo, dono = tipo_controle.lower().strip(), dono_carteira.lower().strip() if dono_carteira else "elias"
-    chave = f"emprestimo_{dono}" if "emprestimo" in tipo else (f"vendas_{dono}" if tipo in ["vendas", "venda", "eletronicos", "eletronico"] else ("vencimentos" if "vencimento" in tipo else "gastos"))
-    return DADOS_PLANILHAS_LOCAL.get(chave, "Tabela não mapeada no sistema.")
-
-# MELHORIA NA FUNÇÃO DE CONSULTA (Adicionando tratamento de erro robusto)
 def executar_query_mercado_realtime(sql_comando: str) -> str:
+    """Envia uma query SQL direto para o LIONSTESTE.exe no servidor do mercado."""
     global FILA_CONSULTAS_MERCADO, RESPOSTAS_MERCADO
     id_requisicao = str(uuid.uuid4())[:8]
     
     ordem = {"id": id_requisicao, "sql": sql_comando}
     FILA_CONSULTAS_MERCADO.append(ordem)
+    print(f"📡 [PONTE MERCADO] Query enviada para a fila. ID: {id_requisicao}")
     
-    # Aumentado para 40 tentativas (20 segundos) para evitar timeout prematuro
-    for _ in range(40):
+    for _ in range(40): # Até 20 segundos de espera
         time.sleep(0.5)
         if id_requisicao in RESPOSTAS_MERCADO:
-            dados = RESPOSTAS_MERCADO.pop(id_requisicao)
-            # Retorna string limpa para evitar erro de formatação do Gemini
-            return json.dumps(dados, ensure_ascii=False)
+            return json.dumps(RESPOSTAS_MERCADO.pop(id_requisicao), ensure_ascii=False)
             
-    return json.dumps({"erro": "Timeout: O LIONS não respondeu a tempo. Verifique a conexão do servidor local."})
-
-@bot.message_handler(commands=['atualizar'])
-def comando_atualizar(message):
-    bot.reply_to(message, "⏳ Atualizando dados das planilhas na memória do Jarvis... Aguarde.")
-    resultado = atualizar_dados_sheets_agora()
-    bot.send_message(message.chat.id, resultado)
-    
-# MELHORIA NO TRATAMENTO DE ERRO DO TELEGRAM (Para ver o erro real)
-@bot.message_handler(func=lambda message: True)
-def receber_mensagem_telegram(message):
-    global chat_ia
-    chat_id = message.chat.id
-    bot.send_chat_action(chat_id, 'typing')
-    
-    try:
-        resposta_ia = chat_ia.send_message(message.text)
-        # Força Markdown para evitar erros de caracteres especiais
-        bot.send_message(chat_id, resposta_ia.text, parse_mode="Markdown")
-    except Exception as e:
-        # LOG DE ERRO REAL: Isso vai imprimir no console do Render qual é o problema exato
-        print(f"DEBUG DE ERRO: {str(e)}") 
-        bot.send_message(chat_id, f"⚠️ Jarvis em manutenção técnica.\nErro interno: `{str(e)[:50]}`", parse_mode="Markdown")
+    return json.dumps([{"erro": "O servidor local do mercado demorou para responder. Verifique o LIONSTESTE.exe."}])
 
 # =====================================================================
-# 🧠 ARQUITETURA MULTI-AGENTE DO JARVIS (ITEM 3)
+# 🧠 CONFIGURAÇÃO DO MODELO CENTRAL (JARVIS)
 # =====================================================================
 modelo_central = genai.GenerativeModel(
     model_name='models/gemini-2.5-flash',
-    tools=[consultar_banco_local_jarvis, executar_query_mercado_realtime],
+    tools=[consultar_planilha_financeira, executar_query_mercado_realtime], # Ferramenta otimizada aqui
     system_instruction=(
-        f"Você é o JARVIS, a inteligência de altíssima performance estratégica do empresário Elias Fernandes Borges Junior.\n"
+        f"Você é o JARVIS, a inteligência estratégica do empresário Elias Fernandes Borges Junior.\n"
         f"DATA ATUAL DE REFERÊNCIA: Hoje é {datetime.now().strftime('%A, %d de %B de %Y')}.\n\n"
-        "Sua estrutura mental divide-se em 4 SUB-AGENTES ESPECIALISTAS trabalhando em paralelo:\n"
-        "1. DIÁLOGO LÍDER: Mantém um papo extremamente dinâmico, inteligente, de parceiro de negócios, com gírias de mercado sutis. Formatação limpa e premium.\n"
-        "2. AUDITOR DE CRÉDITO: Varre as planilhas financeiras (Elias, Erick, Ikaro). Sabe calcular parcelas em atraso cruzando as datas com o dia de hoje.\n"
-        "3. ANALISTA DE VAREJO (LIONS SUPERMERCADO): Especialista no banco Firebird da Lions. Quando o Elias perguntar sobre faturamento, estoque, rupturas, vendas ou boletos do mercado, você DEVE gerar um código SQL válido para o dialeto Firebird e disparar a ferramenta 'executar_query_mercado_realtime'.\n"
-        "   - Estruturas de Tabelas conhecidas:\n"
-        "     * PRODUTO (CODIGO, DESCRICAO, QTD_ATUAL, PR_CUSTO, PR_VENDA, ATIVO, DT_VALIDADE)\n"
-        "     * VENDAS_MASTER (CODIGO, TOTAL, DATA_EMISSAO, SITUACAO ['F'=Fechada, 'C'=Cancelada], FORMA_PAGAMENTO)\n"
-        "     * VENDAS_DETALHE (FKVENDA, ID_PRODUTO, QTD, TOTAL, PR_CUSTO)\n"
-        "     * CPAGAR (CODIGO, HISTORICO, VALOR, DTVENCIMENTO, SITUACAO ['A'=Aberta, 'P'=Paga])\n\n"
-        "DIRETRIZ DE EXIBIÇÃO FINANCEIRA:\n"
-        "Sempre agrupe as exibições claramente por Carteira/Operador (Elias, Erick, Ikaro) ou organize os dados do mercado sob o título principal '### 🛒 LIONS SUPERMERCADO'. Nunca misture as informações em textos embolados."
+        "Quando o Elias perguntar sobre planilhas de empréstimos, eletrônicos, vendas ou gastos (dele, do Erick ou do Ikaro), "
+        "você DEVE usar a ferramenta 'consultar_planilha_financeira' passando o tipo_controle e o dono_carteira correspondente.\n\n"
+        "Quando perguntar sobre o faturamento, estoque ou dados do mercado Lions, gere o SQL para Firebird e use 'executar_query_mercado_realtime'.\n"
+        "Organize os dados do mercado sob o título principal '### 🛒 LIONS SUPERMERCADO'."
     )
 )
 
 chat_ia = modelo_central.start_chat(enable_automatic_function_calling=True)
 
 # =====================================================================
-# 🌐 ENDPOINTS HTTP (PONTE DE CONEXÃO DO RENDER PARA O MERCADO LOCAL)
+# 🌐 ENDPOINTS HTTP (PONTE COM O SEU EXECUTÁVEL DO MERCADO)
 # =====================================================================
 class ServidorCentralAPI(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         global FILA_CONSULTAS_MERCADO
-        # Endpoint onde o LIONSTESTE.exe local bate a cada 2 segundos procurando ordens SQL
         if self.path == '/api/mercado/pendente':
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             if FILA_CONSULTAS_MERCADO:
-                ordem = FILA_CONSULTAS_MERCADO.pop(0)
-                self.wfile.write(json.dumps(ordem).encode('utf-8'))
+                self.wfile.write(json.dumps(FILA_CONSULTAS_MERCADO.pop(0)).encode('utf-8'))
             else:
                 self.wfile.write(json.dumps({"status": "nada_pendente"}).encode('utf-8'))
         else:
@@ -177,16 +135,10 @@ class ServidorCentralAPI(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         global RESPOSTAS_MERCADO
-        # Endpoint onde o LIONSTESTE.exe local devolve o JSON de dados puro do Firebird
         if self.path == '/api/mercado/resposta':
             content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            dados_recebidos = json.loads(post_data.decode('utf-8'))
-            
-            id_requisicao = dados_recebidos.get("id")
-            resultado_sql = dados_recebidos.get("dados")
-            
-            RESPOSTAS_MERCADO[id_requisicao] = resultado_sql
+            dados_recebidos = json.loads(self.rfile.read(content_length).decode('utf-8'))
+            RESPOSTAS_MERCADO[dados_recebidos.get("id")] = dados_recebidos.get("dados")
             
             self.send_response(200)
             self.end_headers()
@@ -205,24 +157,18 @@ def receber_mensagem_telegram(message):
         resposta_ia = chat_ia.send_message(message.text)
         bot.send_message(chat_id, resposta_ia.text, parse_mode="Markdown")
     except Exception as e:
-        try:
-            bot.send_message(chat_id, resposta_ia.text)
-        except:
-            bot.send_message(chat_id, f"⚠️ Jarvis indisponível momentaneamente. Erro de processamento interno.")
+        print(f"❌ ERRO NO TELEGRAM: {str(e)}")
+        bot.send_message(chat_id, f"⚠️ Jarvis indisponível no momento. Detalhe: `{str(e)[:60]}`", parse_mode="Markdown")
 
-# =====================================================================
-# 🏁 DISPARO DOS MOTORES GERAIS
-# =====================================================================
 def iniciar_servidor_web():
     PORT = int(os.environ.get("PORT", 10000))
     server = socketserver.TCPServer(("", PORT), ServidorCentralAPI)
-    print(f"🌐 Servidor API do Jarvis rodando com sucesso na porta {PORT}...")
+    print(f"🌐 Servidor API do Jarvis ativo na porta {PORT}...")
     server.serve_forever()
 
 if __name__ == "__main__":
-    # APAGUE OU COMENTE A LINHA ABAIXO:
-    # threading.Thread(target=motor_sincronizacao_background_sheets, daemon=True).start()
-    
-    # Mantenha apenas o servidor web e o polling:
+    # O MOTOR DE LOOP INFINITO FOI REMOVIDO DAQUI TOTALMENTE.
+    # Agora o sistema economiza 100% de cota quando você não está usando.
     threading.Thread(target=iniciar_servidor_web, daemon=True).start()
+    print("🧠 Jarvis pronto para operar sob demanda e sem estourar limites!")
     bot.infinity_polling()
