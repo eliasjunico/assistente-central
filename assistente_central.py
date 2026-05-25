@@ -8,10 +8,11 @@ import threading
 import http.server
 import socketserver
 import time
+import uuid
 from datetime import datetime
 
 # =====================================================================
-# 1. CONFIGURAÇÕES INICIAIS E TOKENS
+# 1. CONFIGURAÇÕES INICIAIS E CRIDENCIAIS
 # =====================================================================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -19,29 +20,28 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 genai.configure(api_key=GEMINI_API_KEY)
 
+# Filas de sincronização em tempo real para a ponte com o mercado local (.exe)
+FILA_CONSULTAS_MERCADO = []
+RESPOSTAS_MERCADO = {}
+
 # =====================================================================
 # 🎯 IMPLEMENTAÇÃO DO ITEM 4: BANCO DE CACHE LOCAL (MEMÓRIA RAM)
 # =====================================================================
-# Este dicionário guarda os dados na memória RAM do Render para leitura instantânea
 DADOS_PLANILHAS_LOCAL = {
-    "emprestimo_elias": "Sem dados carregados ainda.",
-    "emprestimo_erick": "Sem dados carregados ainda.",
-    "emprestimo_ikaro": "Sem dados carregados ainda.",
-    "vendas_elias": "Sem dados carregados ainda.",
-    "vendas_erick": "Sem dados carregados ainda.",
-    "vendas_ikaro": "Sem dados carregados ainda.",
-    "vencimentos": "Sem dados carregados ainda.",
-    "gastos": "Sem dados carregados ainda."
+    "emprestimo_elias": "Sem dados carregados.",
+    "emprestimo_erick": "Sem dados carregados.",
+    "emprestimo_ikaro": "Sem dados carregados.",
+    "vendas_elias": "Sem dados carregados.",
+    "vendas_erick": "Sem dados carregados.",
+    "vendas_ikaro": "Sem dados carregados.",
+    "vencimentos": "Sem dados carregados.",
+    "gastos": "Sem dados carregados."
 }
 
-def motor_sincronizacao_background():
-    """
-    TRABALHADOR SILENCIOSO: Roda em segundo plano no Render.
-    A cada 5 minutos, ele vai ao Google Sheets, puxa a tabela inteira 
-    de cada link e joga na memória RAM. O robô nunca mais vai travar por timeout!
-    """
+def motor_sincronizacao_background_sheets():
+    """TRABALHADOR SILENCIOSO: Puxa os dados das planilhas para a RAM a cada 5 min"""
     global DADOS_PLANILHAS_LOCAL
-    print("🔄 [JARVIS ENGINE] Motor de Sincronização em Background Inicializado!")
+    print("🔄 [JARVIS ENGINE] Motor de Sincronização Google Sheets Ativo!")
     
     MAPA_LINKS = {
         "emprestimo_elias": "https://docs.google.com/spreadsheets/d/1-z9cqkxoputvPmHcKFQ6guzPNKj-pQuFjbGfPaCdKrA/edit",
@@ -60,7 +60,6 @@ def motor_sincronizacao_background():
         try:
             google_creds_json = os.environ.get("GOOGLE_CREDS_JSON")
             if not google_creds_json:
-                print("⚠️ Erro: GOOGLE_CREDS_JSON não configurado nas variáveis de ambiente.")
                 time.sleep(30)
                 continue
                 
@@ -71,119 +70,144 @@ def motor_sincronizacao_background():
             for chave, url in MAPA_LINKS.items():
                 try:
                     planilha = client.open_by_url(url)
-                    aba = planilha.get_worksheet(0) # Pega a primeira aba principal por padrão
+                    aba = planilha.get_worksheet(0)
                     valores = aba.get_all_values()
                     
                     if valores:
-                        linhas_formatadas = []
-                        for idx, linha in enumerate(valores[:100]): # Lê até 100 linhas por segurança
-                            linhas_formatadas.append(f"Linha {idx+1}: " + " | ".join([str(c) for c in linha]))
-                        
-                        DADOS_PLANILHAS_LOCAL[chave] = f"Planilha: [{planilha.title}] -> Aba: [{aba.title}]. Dados:\n" + "\n".join(linhas_formatadas)
-                    print(f"✅ Sincronizado com Sucesso: {chave}")
-                except Exception as inner_e:
-                    print(f"⚠️ Falha ao sincronizar chave {chave}: {str(inner_e)}")
-                    
-            print(f"⚡ [CACHE REFRESHED] Todas as planilhas guardadas localmente na RAM às {datetime.now().strftime('%H:%M:%S')}")
-            
+                        lines = [f"Linha {i+1}: " + " | ".join([str(c) for c in r]) for i, r in enumerate(valores[:100])]
+                        DADOS_PLANILHAS_LOCAL[chave] = f"Planilha: [{planilha.title}] -> Aba: [{aba.title}]. Dados:\n" + "\n".join(lines)
+                except Exception as ie:
+                    print(f"⚠️ Erro na sincronização da planilha {chave}: {str(ie)}")
+            print("⚡ [CACHE REFRESHED] Memória RAM atualizada com as tabelas financeiras.")
         except Exception as e:
-            print(f"❌ Erro geral no motor de sincronização: {str(e)}")
-            
-        time.sleep(300) # Dorme por 5 minutos antes de buscar de novo
+            print(f"❌ Erro geral no motor de tabelas: {str(e)}")
+        time.sleep(300)
 
 # =====================================================================
-# 3. FUNÇÃO DO PROMPT DA IA: CONSULTA LOCAL INSTANTÂNEA
+# 🛠️ FERRAMENTAS DO ECOSSISTEMA (TOOLS DO GEMINI)
 # =====================================================================
 def consultar_banco_local_jarvis(tipo_controle: str, dono_carteira: str = "elias") -> str:
-    """
-    Função que o Gemini aciona. Ela responde em milissegundos puxando o dado 
-    que o trabalhador de background salvou na memória RAM.
-    """
+    """Busca instantaneamente no Cache RAM dados das planilhas de empréstimos, eletrônicos ou gastos."""
     global DADOS_PLANILHAS_LOCAL
-    tipo = tipo_controle.lower().strip()
-    dono = dono_carteira.lower().strip() if dono_carteira else "elias"
+    tipo, dono = tipo_controle.lower().strip(), dono_carteira.lower().strip() if dono_carteira else "elias"
+    chave = f"emprestimo_{dono}" if "emprestimo" in tipo else (f"vendas_{dono}" if tipo in ["vendas", "venda", "eletronicos", "eletronico"] else ("vencimentos" if "vencimento" in tipo else "gastos"))
+    return DADOS_PLANILHAS_LOCAL.get(chave, "Tabela não mapeada no sistema.")
+
+def executar_query_mercado_realtime(sql_comando: str) -> str:
+    """Envia uma query SQL direto para o LIONSTESTE.exe no servidor do mercado e aguarda o JSON de resposta."""
+    global FILA_CONSULTAS_MERCADO, RESPOSTAS_MERCADO
+    id_requisicao = str(uuid.uuid4())[:8]
     
-    chave = ""
-    if "emprestimo" in tipo:
-        chave = f"emprestimo_{dono}"
-    elif tipo in ["vendas", "venda", "eletronicos", "eletronico"]:
-        chave = f"vendas_{dono}"
-    elif "vencimento" in tipo:
-        chave = "vencimentos"
-    elif "gasto" in tipo or "custo" in tipo:
-        chave = "gastos"
-        
-    dados = DADOS_PLANILHAS_LOCAL.get(chave, "Aviso: Planilha solicitada não foi mapeada no sistema.")
-    return dados
+    # Coloca o comando SQL gerado pelo Jarvis na fila de transmissão
+    ordem = {"id": id_requisicao, "sql": sql_comando}
+    FILA_CONSULTAS_MERCADO.append(ordem)
+    print(f"📡 [PONTE MERCADO] Nova consulta adicionada à fila. ID: {id_requisicao} | SQL: {sql_comando}")
+    
+    # Aguarda o LIONSTESTE.exe processar localmente e responder via POST (Timeout de 12 segundos)
+    for _ in range(24):
+        time.sleep(0.5)
+        if id_requisicao in RESPOSTAS_MERCADO:
+            dados_retornados = RESPOSTAS_MERCADO.pop(id_requisicao)
+            return json.dumps(dados_retornados, ensure_ascii=False)
+            
+    return json.dumps([{"erro": "O servidor local do mercado (LIONSTESTE.exe) demorou para responder. Verifique se ele está aberto no mercado."}])
 
 # =====================================================================
-# 4. CONFIGURAÇÃO DA ARQUITETURA MULTI-AGENTE DO JARVIS (ITEM 3)
+# 🧠 ARQUITETURA MULTI-AGENTE DO JARVIS (ITEM 3)
 # =====================================================================
 modelo_central = genai.GenerativeModel(
     model_name='models/gemini-2.5-flash',
-    tools=[consultar_banco_local_jarvis],
+    tools=[consultar_banco_local_jarvis, executar_query_mercado_realtime],
     system_instruction=(
-        f"Você é o JARVIS, o sistema de inteligência artificial de alta performance e braço direito do Elias Fernandes Borges Junior.\n"
-        f"DATA CONTEXTUAL ABSOLUTA: Hoje é {datetime.now().strftime('%A, %d de %B de %Y')}. O ano corrente é {datetime.now().year}.\n\n"
-        "Sua mente opera através de 3 SUB-AGENTES ESPECIALISTAS internos que trabalham em conjunto:\n"
-        "1. AGENTE LÍDER DE DIÁLOGO: Controla a conversa de forma descontraída, confiante e extremamente parceira. Você fala como um humano genial (estilo o Jarvis do Homem de Ferro), usando termos de negócios leves e respondendo com fluidez. Esqueça textos quadrados ou robóticos.\n"
-        "2. AGENTE AUDITOR DE CRÉDITO E PARCELAS: Domina a matemática das tabelas. Sabe fazer varreduras completas nas linhas e colunas. Sabe que nas abas de clientes (linha 5 para baixo), a Coluna A = Qtd parcelas (iniciando na linha 9), Coluna B = Vencimento, Coluna C = Valor, Coluna E = Status ('Sim'/'sim' significa PAGO. Vazio ou 'Não' significa EM ABERTO).\n"
-        "3. AGENTE ESTRATEGISTA DE FLUXO DE CAIXA: Compara as datas das parcelas com o dia de hoje, calcula quantos dias estão atrasados, calcula faturamentos futuros e dá insights financeiros reais.\n\n"
-        "DIRETRIZ DE AÇÃO ANTECIPADA:\n"
-        "Se o Elias pedir para olhar as planilhas, os empréstimos ou as vendas de forma genérica, NÃO faça perguntas de confirmação. Acione imediatamente a ferramenta 'consultar_banco_local_jarvis' para recolher as informações necessárias das carteiras relevantes e monte a resposta por iniciativa própria.\n\n"
-        "PADRÃO VISUAL OBRIGATÓRIO DE EXIBIÇÃO (SEPARADO POR OPERADOR):\n"
-        "Sempre organize os dados financeiros agrupados por Operador (Elias, Erick, Ikaro). Deixe o texto respirar usando espaçamentos. Siga rigorosamente este modelo estruturado:\n\n"
-        "Fala, Elias! [Introdução inteligente e natural sobre o cenário atual...]\n\n"
-        "### 👤 CARTEIRA: [NOME DO OPERADOR]\n"
-        "[Aviso de status curto, ex: ⚠️ Atenção ou 👍 Tudo Limpo]\n"
-        "• *Nome do Cliente / Item*\n"
-        "  - *Vencimento*: DD/MM/AAAA\n"
-        "  - *Status*: 🔴 ATRASADO (X dias) | 🟢 EM DIA (Vence em X dias) | 🔵 PAGO\n"
-        "  - *Valor*: R$ XX,XX\n\n"
-        "### 📊 RESUMO DO DIA (Insights do Jarvis):\n"
-        "[Seu panorama focado em estratégia, metas de cobrança e injeção de caixa no final]."
+        f"Você é o JARVIS, a inteligência de altíssima performance estratégica do empresário Elias Fernandes Borges Junior.\n"
+        f"DATA ATUAL DE REFERÊNCIA: Hoje é {datetime.now().strftime('%A, %d de %B de %Y')}.\n\n"
+        "Sua estrutura mental divide-se em 4 SUB-AGENTES ESPECIALISTAS trabalhando em paralelo:\n"
+        "1. DIÁLOGO LÍDER: Mantém um papo extremamente dinâmico, inteligente, de parceiro de negócios, com gírias de mercado sutis. Formatação limpa e premium.\n"
+        "2. AUDITOR DE CRÉDITO: Varre as planilhas financeiras (Elias, Erick, Ikaro). Sabe calcular parcelas em atraso cruzando as datas com o dia de hoje.\n"
+        "3. ANALISTA DE VAREJO (LIONS SUPERMERCADO): Especialista no banco Firebird da Lions. Quando o Elias perguntar sobre faturamento, estoque, rupturas, vendas ou boletos do mercado, você DEVE gerar um código SQL válido para o dialeto Firebird e disparar a ferramenta 'executar_query_mercado_realtime'.\n"
+        "   - Estruturas de Tabelas conhecidas:\n"
+        "     * PRODUTO (CODIGO, DESCRICAO, QTD_ATUAL, PR_CUSTO, PR_VENDA, ATIVO, DT_VALIDADE)\n"
+        "     * VENDAS_MASTER (CODIGO, TOTAL, DATA_EMISSAO, SITUACAO ['F'=Fechada, 'C'=Cancelada], FORMA_PAGAMENTO)\n"
+        "     * VENDAS_DETALHE (FKVENDA, ID_PRODUTO, QTD, TOTAL, PR_CUSTO)\n"
+        "     * CPAGAR (CODIGO, HISTORICO, VALOR, DTVENCIMENTO, SITUACAO ['A'=Aberta, 'P'=Paga])\n\n"
+        "DIRETRIZ DE EXIBIÇÃO FINANCEIRA:\n"
+        "Sempre agrupe as exibições claramente por Carteira/Operador (Elias, Erick, Ikaro) ou organize os dados do mercado sob o título principal '### 🛒 LIONS SUPERMERCADO'. Nunca misture as informações em textos embolados."
     )
 )
 
 chat_ia = modelo_central.start_chat(enable_automatic_function_calling=True)
 
 # =====================================================================
-# 5. TRATAMENTO DE MENSAGENS DO TELEGRAM (Blindagem de Erros)
+# 🌐 ENDPOINTS HTTP (PONTE DE CONEXÃO DO RENDER PARA O MERCADO LOCAL)
+# =====================================================================
+class ServidorCentralAPI(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        global FILA_CONSULTAS_MERCADO
+        # Endpoint onde o LIONSTESTE.exe local bate a cada 2 segundos procurando ordens SQL
+        if self.path == '/api/mercado/pendente':
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            if FILA_CONSULTAS_MERCADO:
+                ordem = FILA_CONSULTAS_MERCADO.pop(0)
+                self.wfile.write(json.dumps(ordem).encode('utf-8'))
+            else:
+                self.wfile.write(json.dumps({"status": "nada_pendente"}).encode('utf-8'))
+        else:
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"Jarvis Central Online")
+
+    def do_POST(self):
+        global RESPOSTAS_MERCADO
+        # Endpoint onde o LIONSTESTE.exe local devolve o JSON de dados puro do Firebird
+        if self.path == '/api/mercado/resposta':
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            dados_recebidos = json.loads(post_data.decode('utf-8'))
+            
+            id_requisicao = dados_recebidos.get("id")
+            resultado_sql = dados_recebidos.get("dados")
+            
+            RESPOSTAS_MERCADO[id_requisicao] = resultado_sql
+            
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(json.dumps({"status": "recebido"}).encode('utf-8'))
+
+# =====================================================================
+# 💬 ENTRADA DE MENSAGENS TELEGRAM
 # =====================================================================
 @bot.message_handler(func=lambda message: True)
-def processar_mensagem(message):
+def receber_mensagem_telegram(message):
     global chat_ia
     chat_id = message.chat.id
-    texto_usuario = message.text
-    
     bot.send_chat_action(chat_id, 'typing')
-
+    
     try:
-        resposta_ia = chat_ia.send_message(texto_usuario)
-        # Tentativa em Markdown para manter o visual premium do painel do Jarvis
+        resposta_ia = chat_ia.send_message(message.text)
         bot.send_message(chat_id, resposta_ia.text, parse_mode="Markdown")
     except Exception as e:
-        # Se o Markdown falhar por caracteres especiais da IA, envia em formato de texto limpo de segurança
         try:
             bot.send_message(chat_id, resposta_ia.text)
         except:
-            bot.send_message(chat_id, f"⚠️ Jarvis indisponível no momento: {str(e)}")
+            bot.send_message(chat_id, f"⚠️ Jarvis indisponível momentaneamente. Erro de processamento interno.")
 
 # =====================================================================
-# 6. INICIALIZAÇÃO DOS MOTORES E SERVIDOR FALSO
+# 🏁 DISPARO DOS MOTORES GERAIS
 # =====================================================================
-def rodar_servidor_falso():
+def iniciar_servidor_web():
     PORT = int(os.environ.get("PORT", 10000))
-    Handler = http.server.SimpleHTTPRequestHandler
-    with socketserver.TCPServer(("", PORT), Handler) as httpd:
-        httpd.serve_forever()
+    server = socketserver.TCPServer(("", PORT), ServidorCentralAPI)
+    print(f"🌐 Servidor API do Jarvis rodando com sucesso na porta {PORT}...")
+    server.serve_forever()
 
 if __name__ == "__main__":
-    # 1. Liga o motor de sincronização em segundo plano (Item 4)
-    threading.Thread(target=motor_sincronizacao_background, daemon=True).start()
+    # 1. Inicia o motor de cache RAM para as planilhas (Item 4)
+    threading.Thread(target=motor_sincronizacao_background_sheets, daemon=True).start()
     
-    # 2. Liga o servidor para manter o Render feliz
-    threading.Thread(target=rodar_servidor_falso, daemon=True).start()
+    # 2. Inicia o servidor HTTP de escuta para o mercado local
+    threading.Thread(target=iniciar_servidor_web, daemon=True).start()
     
-    print("🧠 [JARVIS CENTRAL] Sistema Multi-Agente & Cache local operando na porta 10000...")
+    print("🧠 Ecossistema Multi-Agente do Jarvis operando em alta performance...")
     bot.infinity_polling()
