@@ -38,10 +38,10 @@ DADOS_PLANILHAS_LOCAL = {
     "gastos": "Sem dados carregados."
 }
 
-def motor_sincronizacao_background_sheets():
-    """TRABALHADOR SILENCIOSO: Puxa os dados das planilhas para a RAM a cada 5 min"""
+def atualizar_dados_sheets_agora():
+    """Atualiza o cache da RAM apenas quando solicitado, economizando cota."""
     global DADOS_PLANILHAS_LOCAL
-    print("🔄 [JARVIS ENGINE] Motor de Sincronização Google Sheets Ativo!")
+    print("🔄 [JARVIS ENGINE] Atualizando tabelas do Google Sheets via comando...")
     
     MAPA_LINKS = {
         "emprestimo_elias": "https://docs.google.com/spreadsheets/d/1-z9cqkxoputvPmHcKFQ6guzPNKj-pQuFjbGfPaCdKrA/edit",
@@ -56,32 +56,28 @@ def motor_sincronizacao_background_sheets():
     
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     
-    while True:
-        try:
-            google_creds_json = os.environ.get("GOOGLE_CREDS_JSON")
-            if not google_creds_json:
-                time.sleep(30)
-                continue
-                
-            creds_dict = json.loads(google_creds_json)
-            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-            client = gspread.authorize(creds)
+    try:
+        google_creds_json = os.environ.get("GOOGLE_CREDS_JSON")
+        if not google_creds_json: return "Erro: Sem credenciais do Google no servidor."
             
-            for chave, url in MAPA_LINKS.items():
-                try:
-                    planilha = client.open_by_url(url)
-                    aba = planilha.get_worksheet(0)
-                    valores = aba.get_all_values()
-                    
-                    if valores:
-                        lines = [f"Linha {i+1}: " + " | ".join([str(c) for c in r]) for i, r in enumerate(valores[:100])]
-                        DADOS_PLANILHAS_LOCAL[chave] = f"Planilha: [{planilha.title}] -> Aba: [{aba.title}]. Dados:\n" + "\n".join(lines)
-                except Exception as ie:
-                    print(f"⚠️ Erro na sincronização da planilha {chave}: {str(ie)}")
-            print("⚡ [CACHE REFRESHED] Memória RAM atualizada com as tabelas financeiras.")
-        except Exception as e:
-            print(f"❌ Erro geral no motor de tabelas: {str(e)}")
-        time.sleep(300)
+        creds_dict = json.loads(google_creds_json)
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        
+        for chave, url in MAPA_LINKS.items():
+            try:
+                planilha = client.open_by_url(url)
+                aba = planilha.get_worksheet(0)
+                valores = aba.get_all_values()
+                
+                if valores:
+                    lines = [f"Linha {i+1}: " + " | ".join([str(c) for c in r]) for i, r in enumerate(valores[:100])]
+                    DADOS_PLANILHAS_LOCAL[chave] = f"Planilha: [{planilha.title}] -> Aba: [{aba.title}]. Dados:\n" + "\n".join(lines)
+            except Exception as ie:
+                print(f"⚠️ Erro na planilha {chave}: {str(ie)}")
+        return "✅ Cache das planilhas atualizado com sucesso!"
+    except Exception as e:
+        return f"❌ Erro geral: {str(e)}"
 
 # =====================================================================
 # 🛠️ FERRAMENTAS DO ECOSSISTEMA (TOOLS DO GEMINI)
@@ -111,6 +107,12 @@ def executar_query_mercado_realtime(sql_comando: str) -> str:
             
     return json.dumps({"erro": "Timeout: O LIONS não respondeu a tempo. Verifique a conexão do servidor local."})
 
+@bot.message_handler(commands=['atualizar'])
+def comando_atualizar(message):
+    bot.reply_to(message, "⏳ Atualizando dados das planilhas na memória do Jarvis... Aguarde.")
+    resultado = atualizar_dados_sheets_agora()
+    bot.send_message(message.chat.id, resultado)
+    
 # MELHORIA NO TRATAMENTO DE ERRO DO TELEGRAM (Para ver o erro real)
 @bot.message_handler(func=lambda message: True)
 def receber_mensagem_telegram(message):
@@ -218,11 +220,9 @@ def iniciar_servidor_web():
     server.serve_forever()
 
 if __name__ == "__main__":
-    # 1. Inicia o motor de cache RAM para as planilhas (Item 4)
-    threading.Thread(target=motor_sincronizacao_background_sheets, daemon=True).start()
+    # APAGUE OU COMENTE A LINHA ABAIXO:
+    # threading.Thread(target=motor_sincronizacao_background_sheets, daemon=True).start()
     
-    # 2. Inicia o servidor HTTP de escuta para o mercado local
+    # Mantenha apenas o servidor web e o polling:
     threading.Thread(target=iniciar_servidor_web, daemon=True).start()
-    
-    print("🧠 Ecossistema Multi-Agente do Jarvis operando em alta performance...")
     bot.infinity_polling()
