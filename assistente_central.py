@@ -7,6 +7,8 @@ import json
 import threading
 import http.server
 import socketserver
+import time
+from datetime import datetime
 
 # =====================================================================
 # 1. CONFIGURAÇÕES INICIAIS E TOKENS
@@ -17,15 +19,34 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 genai.configure(api_key=GEMINI_API_KEY)
 
+# GLOBAL PARA O CACHE (ITEM 4)
+# Guarda os dados na memória para não estourar limite do Google e responder instantâneo
+CACHE_PLANILHAS = {}
+CACHE_TIMEOUT_SEGUNDOS = 300  # 5 minutos de cache
+
 # =====================================================================
-# 2. FERRAMENTA MASTER: ACESSO DIRETO POR LINK E INTENÇÃO
+# 2. FERRAMENTA MASTER COM CACHE LOCAL INTEGRADO (ITEM 4)
 # =====================================================================
 def ler_planilha_do_negocio(tipo_controle: str, dono_carteira: str = "elias", aba_nome: str = None) -> str:
     """
-    Acessa as planilhas do Elias usando links diretos e fixos.
-    tipo_controle: 'emprestimo', 'vendas', 'vencimentos' ou 'gastos'
-    dono_carteira: 'elias', 'erick' ou 'ikaro'
+    Acessa as planilhas do Elias usando links diretos, com sistema de cache local de 5 minutos.
     """
+    global CACHE_PLANILHAS
+    
+    tipo = tipo_controle.lower().strip()
+    dono = dono_carteira.lower().strip() if dono_carteira else "elias"
+    
+    # Define a chave única do cache para este pedido
+    chave_cache = f"{tipo}_{dono}_{aba_nome}"
+    tempo_atual = time.time()
+    
+    # Se o dado estiver no cache e não expirou, devolve na hora! (Velocidade Jarvis)
+    if chave_cache in CACHE_PLANILHAS:
+        dados_salvos, timestamp = CACHE_PLANILHAS[chave_cache]
+        if tempo_atual - timestamp < CACHE_TIMEOUT_SEGUNDOS:
+            print(f"⚡ [CACHE HITTED] Servindo dados de {chave_cache} direto da memória!")
+            return dados_salvos
+
     try:
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         google_creds_json = os.environ.get("GOOGLE_CREDS_JSON")
@@ -33,9 +54,6 @@ def ler_planilha_do_negocio(tipo_controle: str, dono_carteira: str = "elias", ab
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
         
-        # =====================================================================
-        # 🎯 MAPA OFICIAL DE LINKS DO ELIAS
-        # =====================================================================
         MAPA_LINKS = {
             "emprestimo": {
                 "elias": "https://docs.google.com/spreadsheets/d/1-z9cqkxoputvPmHcKFQ6guzPNKj-pQuFjbGfPaCdKrA/edit",
@@ -50,9 +68,6 @@ def ler_planilha_do_negocio(tipo_controle: str, dono_carteira: str = "elias", ab
             "vencimentos": "https://docs.google.com/spreadsheets/d/1Tgt2UXDtFh6KewMrcndVHlh3nYVcd67exvlkuth1QYw/edit",
             "gastos": "https://docs.google.com/spreadsheets/d/1du4JGSwpAgNU0FfpxzNrYOlNUlhIkOPTNunhnhoiwD4/edit"
         }
-        
-        tipo = tipo_controle.lower().strip()
-        dono = dono_carteira.lower().strip() if dono_carteira else "elias"
         
         if tipo in ["emprestimo", "emprestimos"]:
             url_alvo = MAPA_LINKS["emprestimo"].get(dono, MAPA_LINKS["emprestimo"]["elias"])
@@ -80,40 +95,50 @@ def ler_planilha_do_negocio(tipo_controle: str, dono_carteira: str = "elias", ab
             
         todos_os_dados = aba.get_all_values()
         if not todos_os_dados:
-            return f"A planilha [{planilha.title}] foi aberta, mas a aba '{aba.title}' está vazia."
+            return f"A planilha [{planilha.title}] está vazia na aba '{aba.title}'."
             
         linhas_texto = []
         for i, linha in enumerate(todos_os_dados[:100]):
             linhas_texto.append(f"Linha {i+1}: " + " | ".join([str(c) for c in linha]))
             
-        return f"Sucesso! Planilha: [{planilha.title}] -> Aba: [{aba.title}]. Dados:\n" + "\n".join(linhas_texto)
+        resultado_final = f"Sucesso! Planilha: [{planilha.title}] -> Aba: [{aba.title}]. Dados:\n" + "\n".join(linhas_texto)
+        
+        # Salva no cache antes de retornar
+        CACHE_PLANILHAS[chave_cache] = (resultado_final, tempo_atual)
+        return resultado_final
         
     except Exception as e:
         return f"Erro ao acessar planilha por link: {str(e)}."
 
 # =====================================================================
-# 3. CONFIGURAÇÃO DO CÉREBRO DA IA (Modo Jarvis - Estabilizado)
+# 3. CONFIGURAÇÃO DA ARQUITETURA MULTI-AGENTE DO JARVIS (ITEM 3)
 # =====================================================================
+# Criamos sub-especialistas no prompt para o Jarvis atuar com sub-agentes internos focados
 modelo_central = genai.GenerativeModel(
     model_name='models/gemini-2.5-flash',
     tools=[ler_planilha_do_negocio],
     system_instruction=(
-        "Você é o JARVIS, o co-piloto de inteligência analítica, estrategista e braço direito ultra-avançado do Elias Fernandes Borges Junior.\n"
-        "Seu tom é confiante, inteligente, focado em alta performance e extremamente parceiro. Você fala como um humano genial, usando gírias leves de negócios e mantendo uma conversa dinâmica, fluida e interativa. Esqueça respostas robóticas ou checklists engessados.\n\n"
-        "DIRETRIZES DE ALTA INTELIGÊNCIA:\n"
-        "1. ANTECIPAÇÃO ATIVA: Se o Elias te der um comando vago ou informal (ex: 'Como estão as coisas nos empréstimos?'), não faça perguntas de confirmação. Pegue a iniciativa, use IMEDIATAMENTE a ferramenta 'ler_planilha_do_negocio' com os parâmetros correspondentes e traga o resultado mastigado.\n"
-        "2. ANÁLISE COMPLETA (VISÃO JARVIS): Ao abrir uma planilha, você faz varreduras de ponta a ponta na aba. Localize o nome do cliente ou a data que ele busca, identifique se há parcelas abertas ou em atraso, calcule o montante acumulado e analise o cenário de forma autônoma.\n"
-        "3. REGRAS DO ECOSSISTEMA DO ELIAS:\n"
-        "   - Você gerencia controles de Empréstimos e Vendas (que envolvem o Elias e os parceiros Erick e Ikaro), além de tabelas globais de Gastos e Vencimentos.\n"
-        "   - Lógica de Clientes/Parcelas: Linha 5 em diante traz os dados. A partir da linha 9, Coluna A = Quantidade de parcelas, Coluna B = Vencimento, Coluna C = Valor, Coluna E = Status de pagamento ('Sim' ou 'sim' significa PAGO. Vazio ou 'Não' significa EM ABERTO).\n"
-        "4. INTERATIVIDADE E FORMATAÇÃO: Responda com total genialidade e criatividade. IMPORTANTE: Use apenas negritos normais e listas simples para estruturar seu texto. Evite usar caracteres complexos ou tabelas muito elaboradas de texto puro para não quebrar o motor de renderização do Telegram."
+        f"Você é o JARVIS, o sistema de inteligência artificial central e braço direito do Elias Fernandes Borges Junior.\n"
+        f"DATA CONTEXTUAL ABSOLUTA: Hoje é {datetime.now().strftime('%A, %d de %B de %Y')}. O ano corrente é {datetime.now().year}.\n\n"
+        "Sua mente é dividida em 3 SUB-AGENTES ESPECIALISTAS internos:\n"
+        "1. AGENTE GERENTE: Controla o fluxo da conversa, fala de forma natural, sagaz e direta, sem enrolação robótica.\n"
+        "2. AGENTE AUDITOR FINANCEIRO: Domina a matemática das parcelas. Sabe analisar vencimentos comparando com a data de hoje. Entende que na Coluna A fica a Qtd de parcelas (linha 9 em diante), Coluna B é Vencimento, Coluna C é Valor, Coluna E é Status de pagamento ('Sim' ou 'sim' = PAGO, vazio ou 'Não' = EM ABERTO).\n"
+        "3. AGENTE DE DATA E ESTRATÉGIA: Sabe cruzar os prazos e antecipar faturamentos futuros.\n\n"
+        "DIRETRIZ DE ORGANIZAÇÃO DE RESPOSTA (ESSENCIAL):\n"
+        "Suas exibições para o Elias no Telegram devem ser EXTREMAMENTE ORGANIZADAS, limpas e fáceis de ler batendo o olho. Siga rigorosamente este padrão estruturado:\n\n"
+        "📌 *[Título Claro do Status ou Planilha Analisada]*\n\n"
+        "• *Nome do Cliente / Item*: Detalhes rápidos em tópicos.\n"
+        "  - *Vencimento*: DD/MM/AAAA\n"
+        "  - *Status*: 🔴 ATRASADO (X dias) | 🟢 EM DIA | 🔵 PAGO\n"
+        "  - *Valor*: R$ XX,XX\n\n"
+        "Use espaçamentos em branco entre blocos de clientes para o texto respirar. Evite parágrafos longos com dados misturados. Mostre o faturamento bruto ou o total pendente somado sempre no final em destaque."
     )
 )
 
 chat_ia = modelo_central.start_chat(enable_automatic_function_calling=True)
 
 # =====================================================================
-# 4. TRATAMENTO DE MENSAGENS DO TELEGRAM (Tratamento de texto limpo)
+# 4. TRATAMENTO DE MENSAGENS DO TELEGRAM
 # =====================================================================
 @bot.message_handler(func=lambda message: True)
 def processar_mensagem(message):
@@ -136,10 +161,14 @@ def processar_mensagem(message):
 
     try:
         resposta_ia = chat_ia.send_message(texto_usuario)
-        # Enviamos como texto limpo por padrão para garantir estabilidade absoluta contra erros 400
-        bot.send_message(chat_id, resposta_ia.text)
+        # Envia a resposta interpretando o Markdown básico configurado pelo Jarvis
+        bot.send_message(chat_id, resposta_ia.text, parse_mode="Markdown")
     except Exception as e:
-        bot.send_message(chat_id, f"⚠️ Erro ao processar o comando da IA: {str(e)}")
+        # Se por acaso der qualquer erro de Markdown do Telegram, ele reenvia em modo seguro (texto limpo)
+        try:
+            bot.send_message(chat_id, resposta_ia.text)
+        except:
+            bot.send_message(chat_id, f"⚠️ Erro ao processar o comando da IA: {str(e)}")
 
 # =====================================================================
 # 5. INICIALIZAÇÃO DO SERVIDOR DO RENDER
@@ -152,5 +181,5 @@ def rodar_servidor_falso():
 
 if __name__ == "__main__":
     threading.Thread(target=rodar_servidor_falso, daemon=True).start()
-    print("🧠 Jarvis Estabilizado online...")
+    print("🧠 Jarvis Avançado (Multi-Agente & Cache) online...")
     bot.infinity_polling()
