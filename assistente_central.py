@@ -23,15 +23,11 @@ genai.configure(api_key=GEMINI_API_KEY)
 FILA_CONSULTAS_MERCADO = []
 RESPOSTAS_MERCADO = {}
 
-# =====================================================================
-# 🎯 NOVA ABORDAGEM: CONSULTA DIRETA E SOB DEMANDA (SEM LOOP DE CACHE)
-# =====================================================================
 def consultar_planilha_financeira(tipo_controle: str, dono_carteira: str = "elias") -> str:
-    """Busca os dados EM TEMPO REAL de uma planilha específica apenas quando o Jarvis precisar."""
+    """Abre a planilha e entrega um relatório ultra-estruturado para o Jarvis analisar."""
     tipo = tipo_controle.lower().strip()
     dono = dono_carteira.lower().strip() if dono_carteira else "elias"
     
-    # Identifica qual chave o Jarvis quer buscar
     if "emprestimo" in tipo:
         chave = f"emprestimo_{dono}"
     elif tipo in ["vendas", "venda", "eletronicos", "eletronico"]:
@@ -56,13 +52,13 @@ def consultar_planilha_financeira(tipo_controle: str, dono_carteira: str = "elia
     if not url:
         return "Erro: Tabela não encontrada ou não mapeada."
 
-    print(f"🔄 [AÇÃO DO JARVIS] Abrindo a planilha Google ({chave}) em tempo real...")
+    print(f"🔄 [AÇÃO DO JARVIS] Processando relatório da planilha ({chave})...")
     
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     try:
         google_creds_json = os.environ.get("GOOGLE_CREDS_JSON")
         if not google_creds_json: 
-            return "Erro: Credenciais do Google (GOOGLE_CREDS_JSON) não configuradas no servidor."
+            return "Erro: GOOGLE_CREDS_JSON não configurado."
             
         creds_dict = json.loads(google_creds_json)
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
@@ -72,13 +68,64 @@ def consultar_planilha_financeira(tipo_controle: str, dono_carteira: str = "elia
         aba = planilha.get_worksheet(0)
         valores = aba.get_all_values()
         
-        if valores:
-            # Pega apenas as primeiras 100 linhas para não estourar tamanho de texto
-            lines = [f"Linha {i+1}: " + " | ".join([str(c) for c in r]) for i, r in enumerate(valores[:100])]
-            return f"Dados da Planilha [{planilha.title}]:\n" + "\n".join(lines)
-        return "A planilha está vazia."
+        if not valores:
+            return f"A planilha da carteira de {dono} está vazia."
+
+        # Se for planilha de CLIENTE / VENDAS / EMPRÉSTIMOS (Baseado na estrutura da linha 5 e parcelas)
+        # Coluna A: Qtd Parcelas (a partir da linha 9) | Coluna B: Vencimento | Coluna C: Valor | Coluna E: Pago (Sim/Não)
+        relatorio = [f"📊 RELATÓRIO ESTRUTURADO - CARTEIRA: {dono.upper()} ({tipo.upper()})"]
+        relatorio.append(f"Nome da Planilha: {planilha.title} | Aba: {aba.title}")
+        relatorio.append("="*50)
+
+        # Captura metadados das primeiras linhas (ex: Nome do Cliente nas linhas de cima se houver)
+        for i in range(min(8, len(valores))):
+            linha_texto = " | ".join([str(c).strip() for c in valores[i] if c])
+            if linha_texto:
+                relatorio.append(f"Info Topo [Linha {i+1}]: {linha_texto}")
+        
+        relatorio.append("\n📌 DETALHAMENTO DE LANÇAMENTOS/PARCELAS (Linha 9 em diante):")
+        
+        # Processa o miolo financeiro (Linha 9 em diante)
+        total_pago = 0.0
+        total_pendente = 0.0
+        
+        for idx, linha in enumerate(valores[8:]): # Linha 9 é índice 8
+            if len(linha) < 3: continue
+            
+            parcela = str(linha[0]).strip()   # Coluna A
+            vencimento = str(linha[1]).strip() # Coluna B
+            valor_raw = str(linha[2]).strip()  # Coluna C
+            status = str(linha[4]).strip().lower() if len(linha) > 4 else "" # Coluna E
+            
+            # Pula linhas vazias
+            if not parcela and not vencimento and not valor_raw:
+                continue
+                
+            # Tenta tratar o valor numérico para somatórios futuros
+            try:
+                val_limpo = valor_raw.replace("R$", "").replace(".", "").replace(",", ".").strip()
+                valor_float = float(val_limpo) if val_limpo else 0.0
+            except:
+                valor_float = 0.0
+
+            if status in ["sim", "pago", "s"]:
+                total_pago += valor_float
+                status_sel = "✅ PAGO"
+            else:
+                total_pendente += valor_float
+                status_sel = "⏳ PENDENTE"
+
+            relatorio.append(f"  • Parc: {parcela} | Venc: {vencimento} | Valor: {valor_raw} | Status: {status_sel}")
+
+        relatorio.append("="*50)
+        relatorio.append(f"📉 Resumo Financeiro Calculado:")
+        relatorio.append(f"   - Total Pago Cadastrado: R$ {total_pago:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        relatorio.append(f"   - Total Pendente/Aberto: R$ {total_pago:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+        
+        return "\n".join(relatorio)
+
     except Exception as e:
-        return f"Erro ao acessar o Google Sheets: {str(e)}"
+        return f"Erro ao processar e organizar dados do Google Sheets: {str(e)}"
 
 def executar_query_mercado_realtime(sql_comando: str) -> str:
     """Envia uma query SQL direto para o LIONSTESTE.exe no servidor do mercado."""
@@ -101,14 +148,17 @@ def executar_query_mercado_realtime(sql_comando: str) -> str:
 # =====================================================================
 modelo_central = genai.GenerativeModel(
     model_name='models/gemini-2.5-flash',
-    tools=[consultar_planilha_financeira, executar_query_mercado_realtime], # Ferramenta otimizada aqui
+    tools=[consultar_planilha_financeira, executar_query_mercado_realtime],
     system_instruction=(
-        f"Você é o JARVIS, a inteligência estratégica do empresário Elias Fernandes Borges Junior.\n"
+        f"Você é o JARVIS, a inteligência de altíssima performance estratégica do empresário Elias Fernandes Borges Junior.\n"
         f"DATA ATUAL DE REFERÊNCIA: Hoje é {datetime.now().strftime('%A, %d de %B de %Y')}.\n\n"
-        "Quando o Elias perguntar sobre planilhas de empréstimos, eletrônicos, vendas ou gastos (dele, do Erick ou do Ikaro), "
-        "você DEVE usar a ferramenta 'consultar_planilha_financeira' passando o tipo_controle e o dono_carteira correspondente.\n\n"
-        "Quando perguntar sobre o faturamento, estoque ou dados do mercado Lions, gere o SQL para Firebird e use 'executar_query_mercado_realtime'.\n"
-        "Organize os dados do mercado sob o título principal '### 🛒 LIONS SUPERMERCADO'."
+        "Sua principal habilidade é a AUDITORIA DE CRÉDITO. Quando o Elias pedir para olhar uma planilha ou consultar dados de vendas/empréstimos "
+        "(seja dele, do Erick ou do Ikaro), você deve chamar a ferramenta 'consultar_planilha_financeira'.\n\n"
+        "Como a ferramenta já te entrega os dados calculados de parcelas (Vencimento, Valor e Status '✅ PAGO' ou '⏳ PENDENTE'), sua tarefa é:\n"
+        "1. Cruzar as datas das parcelas '⏳ PENDENTE' com o dia de hoje para descobrir o que está EM ATRASO.\n"
+        "2. Apresentar um painel executivo direto, limpo, usando negritos e emojis.\n"
+        "3. Se ele pedir para cruzar dados (ex: comparar as vendas dele com as do Erick), chame a ferramenta para a planilha do Elias, guarde o resultado, chame para a do Erick e faça o cruzamento matemático na sua resposta final.\n\n"
+        "Se o assunto for o faturamento ou estoque do Supermercado Lions, use o dialeto Firebird SQL e a ferramenta 'executar_query_mercado_realtime'."
     )
 )
 
