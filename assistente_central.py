@@ -159,10 +159,35 @@ def rotina_cfo_jarvis_30min():
             res_ano = executar_query_mercado_interna("SELECT SUM(TOTAL) as FAT_ANO FROM VENDAS_MASTER WHERE EXTRACT(YEAR FROM DATA_EMISSAO) = EXTRACT(YEAR FROM CURRENT_DATE) AND SITUACAO <> 'C'")
             fat_anual = res_ano[0].get("FAT_ANO", 0.0) if res_ano and "erro" not in res_ano[0] else 0.0
             
-            # Cálculos da Sua Regra (Margem de 25% e Recompra/CMV de 75%)
-            cmv_blindado = fat_hoje * 0.75
-            margem_disponivel = fat_hoje * 0.25
-            sobra_real_mercado = margem_disponivel - pagar_hoje
+           # --- PARTE 1: MERCADOMIX (LIONS) COM MARGEM REAL CALCULADA ---
+# Buscando Faturamento Bruto e CMV Real do dia de hoje direto do relacionamento de tabelas
+query_margem_real = """
+    SELECT 
+        SUM(VD.TOTAL) as FAT_HOJE, 
+        SUM(COALESCE(VD.PR_CUSTO, 0) * COALESCE(VD.QTD, 0)) as CMV_HOJE,
+        COUNT(DISTINCT VM.CODIGO) as QTD_NOTAS
+    FROM VENDAS_MASTER VM 
+    JOIN VENDAS_DETALHE VD ON VM.CODIGO = VD.FKVENDA 
+    WHERE CAST(VM.DATA_EMISSAO AS DATE) = CURRENT_DATE 
+    AND VM.SITUACAO <> 'C'
+"""
+
+res_faturamento = executar_query_mercado_interna(query_margem_real)
+
+if res_faturamento and "erro" not in res_faturamento[0]:
+    fat_hoje = float(res_faturamento[0].get("FAT_HOJE") or 0.0)
+    cmv_real = float(res_faturamento[0].get("CMV_HOJE") or 0.0)
+    qtd_notas = int(res_faturamento[0].get("QTD_NOTAS") or 1)
+else:
+    fat_hoje, cmv_real, qtd_notas = 0.0, 0.0, 1
+
+# A mágica da matemática exata do seu negócio:
+margem_disponivel_real = fat_hoje - cmv_real
+ticket_medio = fat_hoje / qtd_notas if qtd_notas > 0 else 0.0
+percentual_margem = (margem_disponivel_real / fat_hoje * 100) if fat_hoje > 0 else 0.0
+
+# Abatimento das contas a pagar com a margem líquida real que sobrou
+sobra_real_mercado = margem_disponivel_real - pagar_hoje
             
             # --- PARTE 2: CARTEIRAS ---
             carteiras = processar_matematica_carteiras()
