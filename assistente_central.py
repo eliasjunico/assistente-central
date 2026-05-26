@@ -132,16 +132,36 @@ def rotina_cfo_jarvis_30min():
         try:
             print("🔔 Iniciando Auditoria Completa das Operações...")
             
-            # --- PARTE 1: MERCADOMIX (LIONS) ---
-            # 1 e 7. Faturamento Base e Ponto de Equilíbrio
-            res_fat = executar_query_mercado_interna("SELECT SUM(TOTAL) as FAT_HOJE, COUNT(ID) as QTD_NOTAS FROM VENDAS_MASTER WHERE CAST(DATA_EMISSAO AS DATE) = CURRENT_DATE AND SITUACAO <> 'C'")
-            fat_hoje = res_fat[0].get("FAT_HOJE", 0.0) if res_fat and "erro" not in res_fat[0] else 0.0
-            qtd_notas = res_fat[0].get("QTD_NOTAS", 1) if res_fat and "erro" not in res_fat[0] else 1
+            # --- PARTE 1: MERCADOMIX (LIONS) COM MARGEM REAL CALCULADA ---
+            # 1, 2 e 7. Faturamento Bruto, CMV Real, Ticket Médio e Margem Real
+            query_margem_real = """
+                SELECT 
+                    SUM(VD.TOTAL) as FAT_HOJE, 
+                    SUM(COALESCE(VD.PR_CUSTO, 0) * COALESCE(VD.QTD, 0)) as CMV_HOJE,
+                    COUNT(DISTINCT VM.CODIGO) as QTD_NOTAS
+                FROM VENDAS_MASTER VM 
+                JOIN VENDAS_DETALHE VD ON VM.CODIGO = VD.FKVENDA 
+                WHERE CAST(VM.DATA_EMISSAO AS DATE) = CURRENT_DATE 
+                AND VM.SITUACAO <> 'C'
+            """
+            res_faturamento = executar_query_mercado_interna(query_margem_real)
+            
+            if res_faturamento and "erro" not in res_faturamento[0]:
+                fat_hoje = float(res_faturamento[0].get("FAT_HOJE") or 0.0)
+                cmv_real = float(res_faturamento[0].get("CMV_HOJE") or 0.0)
+                qtd_notas = int(res_faturamento[0].get("QTD_NOTAS") or 1)
+            else:
+                fat_hoje, cmv_real, qtd_notas = 0.0, 0.0, 1
+                
+            margem_disponivel_real = fat_hoje - cmv_real
             ticket_medio = fat_hoje / qtd_notas if qtd_notas > 0 else 0.0
+            percentual_margem = (margem_disponivel_real / fat_hoje * 100) if fat_hoje > 0 else 0.0
             
             # Contas a Pagar do Mercado
             res_pag = executar_query_mercado_interna("SELECT SUM(VALOR) as PAGAR_HOJE FROM CPAGAR WHERE DTVENCIMENTO = CURRENT_DATE AND (SITUACAO = 'A' OR VLPAGO <= 0)")
             pagar_hoje = res_pag[0].get("PAGAR_HOJE", 0.0) if res_pag and "erro" not in res_pag[0] else 0.0
+            
+            sobra_real_mercado = margem_disponivel_real - pagar_hoje
             
             # 3. Ruptura Curva A
             res_rup = executar_query_mercado_interna("SELECT FIRST 3 DESCRICAO, QTD_ATUAL FROM PRODUTO WHERE ATIVO='S' AND QTD_ATUAL <= 3")
@@ -159,36 +179,6 @@ def rotina_cfo_jarvis_30min():
             res_ano = executar_query_mercado_interna("SELECT SUM(TOTAL) as FAT_ANO FROM VENDAS_MASTER WHERE EXTRACT(YEAR FROM DATA_EMISSAO) = EXTRACT(YEAR FROM CURRENT_DATE) AND SITUACAO <> 'C'")
             fat_anual = res_ano[0].get("FAT_ANO", 0.0) if res_ano and "erro" not in res_ano[0] else 0.0
             
-           # --- PARTE 1: MERCADOMIX (LIONS) COM MARGEM REAL CALCULADA ---
-# Buscando Faturamento Bruto e CMV Real do dia de hoje direto do relacionamento de tabelas
-query_margem_real = """
-    SELECT 
-        SUM(VD.TOTAL) as FAT_HOJE, 
-        SUM(COALESCE(VD.PR_CUSTO, 0) * COALESCE(VD.QTD, 0)) as CMV_HOJE,
-        COUNT(DISTINCT VM.CODIGO) as QTD_NOTAS
-    FROM VENDAS_MASTER VM 
-    JOIN VENDAS_DETALHE VD ON VM.CODIGO = VD.FKVENDA 
-    WHERE CAST(VM.DATA_EMISSAO AS DATE) = CURRENT_DATE 
-    AND VM.SITUACAO <> 'C'
-"""
-
-res_faturamento = executar_query_mercado_interna(query_margem_real)
-
-if res_faturamento and "erro" not in res_faturamento[0]:
-    fat_hoje = float(res_faturamento[0].get("FAT_HOJE") or 0.0)
-    cmv_real = float(res_faturamento[0].get("CMV_HOJE") or 0.0)
-    qtd_notas = int(res_faturamento[0].get("QTD_NOTAS") or 1)
-else:
-    fat_hoje, cmv_real, qtd_notas = 0.0, 0.0, 1
-
-# A mágica da matemática exata do seu negócio:
-margem_disponivel_real = fat_hoje - cmv_real
-ticket_medio = fat_hoje / qtd_notas if qtd_notas > 0 else 0.0
-percentual_margem = (margem_disponivel_real / fat_hoje * 100) if fat_hoje > 0 else 0.0
-
-# Abatimento das contas a pagar com a margem líquida real que sobrou
-sobra_real_mercado = margem_disponivel_real - pagar_hoje
-            
             # --- PARTE 2: CARTEIRAS ---
             carteiras = processar_matematica_carteiras()
             if isinstance(carteiras, str): carteiras = {"hoje_receber": 0, "hoje_pagar": 0, "saldo_hoje": 0, "saldo_3d": 0, "inadimplencia_5d": 0, "capital_erick": 1, "capital_ikaro": 1, "arrecadacao_mes": 0, "meta_mes": 150000, "atrasos_cronicos": 0}
@@ -202,7 +192,7 @@ sobra_real_mercado = margem_disponivel_real - pagar_hoje
                 f"--- DADOS BRUTOS CONSOLIDADOS ---\n"
                 f"1. CARTEIRAS PESSOAIS (Elias, Erick, Ikaro):\n"
                 f"- A Receber Hoje: R$ {carteiras['hoje_receber']:,.2f} | Contas Hoje: R$ {carteiras['hoje_pagar']:,.2f}\n"
-                f"- Saldo Hoje Imadiato: R$ {carteiras['saldo_hoje']:,.2f}\n"
+                f"- Saldo Hoje Imediato: R$ {carteiras['saldo_hoje']:,.2f}\n"
                 f"- Projeção de Caixa Acumulado para 3 Dias: R$ {carteiras['saldo_3d']:,.2f}\n"
                 f"- [Suj 1] Inadimplência > 5 dias: R$ {carteiras['inadimplencia_5d']:,.2f}\n"
                 f"- [Suj 3] Distribuição de Risco: Erick {part_erick:.1f}% | Ikaro {part_ikaro:.1f}%\n"
@@ -211,13 +201,13 @@ sobra_real_mercado = margem_disponivel_real - pagar_hoje
                 f"- [Suj 9] Clientes com Atraso Crônico Repetitivo: {carteiras['atrasos_cronicos']} registros\n\n"
                 f"2. OPERACIONAL MERCADOMIX:\n"
                 f"- Faturamento Bruto Hoje: R$ {fat_hoje:,.2f}\n"
-                f"- [Regra Elias] CMV Blindado Recompra (75%): R$ {cmv_blindado:,.2f}\n"
-                f"- [Regra Elias] Margem Disponível Caixa (25%): R$ {margem_disponivel:,.2f}\n"
+                f"- CMV Real Calculado Reposição: R$ {cmv_real:,.2f}\n"
+                f"- Margem Disponível Real Caixa: R$ {margem_disponivel_real:,.2f} ({percentual_margem:.1f}%)\n"
                 f"- Contas Operacionais do Dia (CPAGAR): R$ {pagar_hoje:,.2f}\n"
                 f"- Sobra Operacional Líquida Real: R$ {sobra_real_mercado:,.2f}\n"
                 f"- [Suj 2] Ticket Médio Atual: R$ {ticket_medio:,.2f} em {qtd_notas} vendas\n"
                 f"- [Suj 3] Alerta de Ruptura Estoque Crítico: {itens_ruptura}\n"
-                f"- [Suj 4] Mix de Categorias: Mercearia dominando 70% do volume bruto\n"
+                f"- [Suj 4] Mix de Categorias: Mercearia dominando o volume bruto\n"
                 f"- [Suj 5] Perda por Validade Estimada em Alerta: R$ {fat_hoje * 0.02:.2f}\n"
                 f"- [Suj 6] Cancelamentos Suspeitos Frente de Caixa: {qtd_cancelamentos} cupons\n"
                 f"- [Suj 7] Ponto de Equilíbrio Diário Estrutural: R$ 4,500.00 fixo\n"
@@ -242,7 +232,6 @@ sobra_real_mercado = margem_disponivel_real - pagar_hoje
                 try:
                     bot.send_message(MEU_TELEGRAM_CHAT_ID, texto_final, parse_mode="Markdown")
                 except Exception:
-                    # Fallback completo à prova de falhas de caracteres especiais
                     bot.send_message(MEU_TELEGRAM_CHAT_ID, texto_final.replace("**", "").replace("_", ""))
                     
         except Exception as e:
