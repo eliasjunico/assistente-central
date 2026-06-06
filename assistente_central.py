@@ -31,7 +31,7 @@ modelo_jarvis = genai.GenerativeModel(
 CACHE_ULTIMO_STATUS = {"dados": "Aguardando primeira sincronização agendada...", "atualizado_em": "-"}
 
 # =====================================================================
-# 📊 UTILIÁRIOS DE TRATAMENTO DE DADOS
+# 📊 UTILIÁRIOS DE TRATAMENTO E ENVIO SEGURADO DE DADOS
 # =====================================================================
 def limpar_valor(texto):
     """Transforma strings de moeda ('R$ 1.500,00') em floats utilizáveis."""
@@ -51,20 +51,61 @@ def converter_data(texto):
             continue
     return None
 
+def enviar_mensagem_longa(bot, chat_id, texto, msg_original=None):
+    """Fatia mensagens que passam do limite de 4096 caracteres do Telegram."""
+    max_len = 4000
+    if len(texto) <= max_len:
+        try:
+            if msg_original:
+                bot.reply_to(msg_original, texto, parse_mode="Markdown")
+            else:
+                bot.send_message(chat_id, texto, parse_mode="Markdown")
+        except Exception:
+            if msg_original:
+                bot.reply_to(msg_original, texto.replace("**", "").replace("_", ""))
+            else:
+                bot.send_message(chat_id, texto.replace("**", "").replace("_", ""))
+        return
+
+    # Fatiamento inteligente por quebra de linha
+    partes = []
+    while len(texto) > 0:
+        if len(texto) <= max_len:
+            partes.append(texto)
+            break
+        ponto_corte = texto.rfind('\n', 0, max_len)
+        if ponto_corte == -1 or ponto_corte < 2000:
+            ponto_corte = max_len
+        partes.append(texto[:ponto_corte])
+        texto = texto[ponto_corte:].strip()
+
+    for i, parte in enumerate(partes):
+        try:
+            if msg_original and i == 0:
+                bot.reply_to(msg_original, parte, parse_mode="Markdown")
+            else:
+                bot.send_message(chat_id, parte, parse_mode="Markdown")
+        except Exception:
+            limpo = parte.replace("**", "").replace("_", "")
+            if msg_original and i == 0:
+                bot.reply_to(msg_original, limpo)
+            else:
+                bot.send_message(chat_id, limpo)
+        time.sleep(0.5) # Proteção contra o Flood Control do Telegram
+
 # =====================================================================
 # 🧮 ENGINE DE CÁLCULO DOS 10 CRUZAMENTOS ESTRATÉGICOS
 # =====================================================================
 def processar_10_cruzamentos():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     
-    # Estrutura base de dados para consolidar tudo
     db = {
         "entradas_hoje": 0.0, "saidas_hoje": 0.0,
         "entradas_3d": 0.0, "saidas_3d": 0.0,
         "entradas_30d": 0.0, "saidas_30d": 0.0,
         "inadimplencia_critica": 0.0, "clientes_cronicos": 0,
         "capital_rua_erick": 0.0, "capital_rua_ikaro": 0.0, "capital_rua_elias": 0.0,
-        "arrecadado_mes": 0.0, "meta_mes": 150000.0,
+        "arrecadacao_mes": 0.0, "meta_mes": 150000.0,
         "previsto_ontem": 0.0, "realizado_ontem": 0.0,
         "contas_pagar_mes": 0.0
     }
@@ -75,7 +116,6 @@ def processar_10_cruzamentos():
         creds = ServiceAccountCredentials.from_json_keyfile_dict(json.loads(google_creds_json), scope)
         client = gspread.authorize(creds)
         
-        # Mapeamentos das planilhas de entrada
         PLANILHAS_EMPRESTIMOS = {
             "Elias": "https://docs.google.com/spreadsheets/d/1-z9cqkxoputvPmHcKFQ6guzPNKj-pQuFjbGfPaCdKrA/edit",
             "Erick": "https://docs.google.com/spreadsheets/d/158YuDkd6u_psGO9Ciaih1qULfYaddeuz6XPagMV0hgM/edit",
@@ -96,19 +136,17 @@ def processar_10_cruzamentos():
         trinta_dias_depois = hoje + timedelta(days=30)
         
         # -----------------------------------------------------------------
-        # PARTE A: PROCESSAR CONTAS A PAGAR (ATUALIZADO COM SUA NOVA ESTRUTURA)
+        # PARTE A: PROCESSAR CONTAS A PAGAR
         # -----------------------------------------------------------------
         try:
             sh_pagar = client.open_by_url(URL_PAGAR).get_worksheet(0)
             linhas_pagar = sh_pagar.get_all_values()
-            
-            # Se os dados reais começarem na linha 2 (abaixo do cabeçalho), mude para: linhas_pagar[1:]
             for linha in linhas_pagar[8:]: 
                 if not any(linha) or len(linha) < 6: continue
                 
-                valor_conta = limpar_valor(linha[1])    # Coluna B (Índice 1)
-                dt_venc = converter_data(linha[2])      # Coluna C (Índice 2)
-                status_conta = linha[5].upper().strip()  # Coluna F (Índice 5)
+                valor_conta = limpar_valor(linha[1])    # Coluna B
+                dt_venc = converter_data(linha[2])      # Coluna C
+                status_conta = linha[5].upper().strip()  # Coluna F
                 
                 if dt_venc:
                     if status_conta in ["ABERTO", "A PAGAR", "PENDENTE"]:
@@ -128,7 +166,7 @@ def processar_10_cruzamentos():
             try:
                 sheet = client.open_by_url(url).get_worksheet(0)
                 linhas = sheet.get_all_values()
-                for linha in lines[8:]: 
+                for linha in linhas[8:]: 
                     if not any(linha) or len(linha) < 8: continue
                     
                     dt_venc = converter_data(linha[2]) # Coluna C
@@ -165,7 +203,7 @@ def processar_10_cruzamentos():
                 for linha in linhas[8:]: 
                     if not any(linha) or len(linha) < 12: continue
                     
-                    falta_pagar = limpar_valor(linha[8]) # Coluna I (Restante devido)
+                    falta_pagar = limpar_valor(linha[8]) # Coluna I
                     dt_venc_parc = converter_data(linha[10]) # Coluna K
                     valor_parcela = limpar_valor(linha[11]) # Coluna L
                     status = "PAGO" if falta_pagar <= 0 else "ABERTO"
@@ -213,7 +251,7 @@ def processar_10_cruzamentos():
             f"1. LIQUIDEZ DIÁRIA: A Receber Hoje R$ {db['entradas_hoje']:,.2f} | A Pagar Hoje R$ {db['saidas_hoje']:,.2f} | Saldo: R$ {saldo_hoje:,.2f}\n"
             f"2. COBERTURA CURTO PRAZO (3 DIAS): Projeção de Entradas R$ {db['entradas_3d']:,.2f} vs Saídas R$ {db['saidas_3d']:,.2f} | Saldo Acumulado Período: R$ {saldo_3d_acumulado:,.2f}\n"
             f"3. BREAK-EVEN OPERACIONAL: Despesa Média Diária R$ {custo_diario_estimado:,.2f} vs Faturamento do Dia R$ {db['entradas_hoje']:,.2f}\n"
-            f"4. EXPOSIÇÃO À INADIMPLÊNCIA CRÍTICA: R$ {db['inadimplencia_critica']:,.2f} travados há mais de 5 dias (Equivale a {((db['inadimplencia_critica']/db['saidas_hoje']*100) if db['saidas_hoje'] > 0 else 0):.1f}% das contas de hoje)\n"
+            f"4. EXPOSIÇÃO À INADIMPLÊNCIA CRÍTICA: R$ {db['inadimplencia_critica']:,.2f} travados há mais de 5 dias\n"
             f"5. CONCENTRAÇÃO DE RISCO EM PARCEIROS: Total na rua R$ {total_carteira_rua:,.2f} [Elias: {part_elias:.1f}% | Erick: {part_erick:.1f}% | Ikaro: {part_ikaro:.1f}%]\n"
             f"6. EFICIÊNCIA DE COBRANÇA (ONTEM): Previsto R$ {db['previsto_ontem']:,.2f} | Realizado R$ {db['realizado_ontem']:,.2f} | Eficiência: {eficiencia_ontem:.1f}%\n"
             f"7. RITMO DA META MENSAL: Arrecadado R$ {db['arrecadacao_mes']:,.2f} de R$ {db['meta_mes']:,.2f}. Necessário R$ {ritmo_diario_necessario:,.2f}/dia pelos próximos {dias_restantes_mes} dias.\n"
@@ -249,10 +287,7 @@ def executar_auditoria_e_enviar():
         try:
             resposta = modelo_jarvis.generate_content(prompt)
             texto_final = f"💼 **[CFO DIGITAL - BRIEFING EXECUTIVO]**\n\n{resposta.text}"
-            try:
-                bot.send_message(MEU_TELEGRAM_CHAT_ID, texto_final, parse_mode="Markdown")
-            except Exception:
-                bot.send_message(MEU_TELEGRAM_CHAT_ID, texto_final.replace("**", "").replace("_", ""))
+            enviar_mensagem_longa(bot, MEU_TELEGRAM_CHAT_ID, texto_final)
         except Exception as e:
             print(f"Erro na API do Gemini: {e}")
 
@@ -277,6 +312,13 @@ def rotina_cronometrada_cfo():
 @bot.message_handler(func=lambda message: True)
 def responder_chat_livre(message):
     if MEU_TELEGRAM_CHAT_ID and str(message.chat.id) != str(MEU_TELEGRAM_CHAT_ID): return
+    
+    # Gatilho manual rápido para você testar sem esperar o horário cronometrado
+    if message.text.lower() == "rodar briefing":
+        bot.reply_to(message, "⏳ Processando os 10 cruzamentos reais e gerando o relatório...")
+        executar_auditoria_e_enviar()
+        return
+        
     bot.send_chat_action(message.chat.id, 'typing')
     
     prompt_completo = (
@@ -287,10 +329,7 @@ def responder_chat_livre(message):
     )
     try:
         resposta = modelo_jarvis.generate_content(prompt_completo)
-        try:
-            bot.reply_to(message, resposta.text, parse_mode="Markdown")
-        except Exception:
-            bot.reply_to(message, resposta.text)
+        enviar_mensagem_longa(bot, message.chat.id, resposta.text, msg_original=message)
     except Exception as e:
         bot.reply_to(message, f"❌ Erro na resposta da IA: {e}")
 
